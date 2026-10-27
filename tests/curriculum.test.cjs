@@ -1,0 +1,147 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const root = path.resolve(__dirname, '..');
+const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+const initialisation = script.lastIndexOf('initialise();');
+assert.ok(initialisation > 0, 'The application initialisation call must exist');
+
+const context = {
+  console,
+  localStorage: { getItem: () => null, setItem: () => {} },
+};
+vm.createContext(context);
+vm.runInContext(
+  script.slice(0, initialisation) +
+    '\n;globalThis.APP={PHASES,ALL,VIDEOS,orderedOptions,lessonSearchText,normaliseStore,emptyStore};',
+  context,
+);
+const { PHASES, ALL, VIDEOS, orderedOptions, lessonSearchText, normaliseStore, emptyStore } = context.APP;
+const plain = value => JSON.parse(JSON.stringify(value));
+
+test('the curriculum has complete, uniquely identified lessons', () => {
+  assert.equal(PHASES.length, 9);
+  assert.equal(ALL.length, 48);
+  assert.equal(new Set(ALL.map(lesson => lesson.id)).size, 48);
+  for (const lesson of ALL) {
+    assert.match(lesson.id, /^l\d{2}$/);
+    assert.ok(lesson.t.length > 5);
+    assert.ok(Number.isInteger(lesson.m) && lesson.m >= 15);
+    assert.equal(lesson.lab.length, 3, `${lesson.id} practical steps`);
+    assert.equal(lesson.quiz.length, 3, `${lesson.id} quiz questions`);
+    assert.ok(lesson.terms.length >= 2);
+    assert.ok(lesson.q.length > 5);
+    for (const [question, options, answer] of lesson.quiz) {
+      assert.ok(question.length > 5);
+      assert.equal(options.length, 3);
+      assert.equal(new Set(options).size, 3);
+      assert.ok(Number.isInteger(answer) && answer >= 0 && answer < options.length);
+    }
+  }
+});
+
+test('every lesson has a complete, uniquely selected video', () => {
+  const entries = Object.entries(VIDEOS);
+  assert.equal(entries.length, 48);
+  assert.deepEqual(plain(entries.map(([lessonId]) => lessonId).sort()), plain(ALL.map(lesson => lesson.id).sort()));
+  assert.equal(new Set(entries.map(([, video]) => video.id)).size, 48);
+  for (const [lessonId, video] of entries) {
+    assert.match(lessonId, /^l\d{2}$/);
+    assert.match(video.id, /^[A-Za-z0-9_-]{11}$/);
+    assert.ok(video.title.length > 5, `${lessonId} video title`);
+    assert.ok(video.channel.length > 2, `${lessonId} video channel`);
+    assert.match(video.duration, /^\d{1,2}:\d{2}$/);
+    assert.match(video.checked, /^\d{4}-\d{2}-\d{2}$/);
+  }
+  assert.match(html, /const selectedVideo=VIDEOS\[id\]/);
+  assert.match(html, /location\.protocol!=="file:"/);
+  assert.match(html, /class="video-thumbnail"/);
+  assert.match(html, /Every lesson includes a selected, verified beginner video/);
+});
+
+test('displayed answer positions are balanced and stable', () => {
+  const positions = [0, 0, 0];
+  for (const lesson of ALL) {
+    lesson.quiz.forEach((quiz, index) => {
+      const ordered = orderedOptions(lesson.id, index, quiz[1]);
+      assert.deepEqual(plain(ordered), plain(orderedOptions(lesson.id, index, quiz[1])));
+      assert.deepEqual(plain(ordered.map(option => option.value).sort()), [0, 1, 2]);
+      positions[ordered.findIndex(option => option.value === quiz[2])]++;
+    });
+  }
+  assert.ok(Math.max(...positions) - Math.min(...positions) <= 10);
+  for (let choice = 0; choice < 3; choice++) {
+    const passes = ALL.filter(lesson =>
+      lesson.quiz.filter((quiz, index) =>
+        orderedOptions(lesson.id, index, quiz[1])[choice].value === quiz[2]
+      ).length >= 2
+    ).length;
+    assert.ok(passes <= 5, `A single displayed answer letter should not pass the course; got ${passes}`);
+  }
+});
+
+test('practical examples cannot create unintended headings or controls', () => {
+  for (const lesson of ALL) {
+    for (const step of lesson.lab) {
+      assert.doesNotMatch(step, /<(?:h1|button|p|script)(?:\s|>)/i, lesson.id);
+    }
+  }
+  assert.ok(ALL.find(lesson => lesson.id === 'l23').lab[0].includes('&lt;h1&gt;'));
+});
+
+test('required practical work does not depend on external accounts', () => {
+  const accountDependency = /create (?:a |an |free )?accounts?|on tryhackme|complete (?:the |one )?(?:guided )?(?:room|lab) on|portswigger academy's first lab/i;
+  for (const lesson of ALL) {
+    for (const step of lesson.lab) {
+      assert.doesNotMatch(step, accountDependency, lesson.id);
+    }
+  }
+  for (const lesson of ALL.filter(lesson => ['l38', 'l39', 'l41', 'l42', 'l43', 'l47'].includes(lesson.id))) {
+    assert.ok((lesson.links || []).some(([label]) => /optional extension/i.test(label)), lesson.id);
+  }
+});
+
+test('resource links use expected web protocols', () => {
+  const links = ALL.flatMap(lesson => lesson.links || []);
+  assert.ok(links.length >= 20);
+  for (const [label, address] of links) {
+    assert.ok(label.length > 3);
+    const url = new URL(address);
+    assert.ok(url.protocol === 'https:' || (url.protocol === 'http:' && url.hostname === 'neverssl.com'));
+  }
+});
+
+test('search includes explanations, terms, and practical content', () => {
+  assert.ok(lessonSearchText(ALL.find(lesson => lesson.id === 'l32')).includes('csrf'));
+  assert.ok(lessonSearchText(ALL.find(lesson => lesson.id === 'l30')).includes('salt'));
+  assert.ok(lessonSearchText(ALL.find(lesson => lesson.id === 'l45')).includes('gcc'));
+});
+
+test('backup normalisation preserves valid progress and discards invalid data', () => {
+  const clean = plain(normaliseStore({
+    done: ['l01', 'l01', 'not-a-lesson', 42],
+    labs: { l01: [true, 'true', false] },
+    quiz: { l01: 2, l02: 99 },
+    last: 'l01',
+  }));
+  assert.deepEqual(clean.done, ['l01']);
+  assert.deepEqual(clean.labs.l01, [true, false, false]);
+  assert.deepEqual(clean.quiz, { l01: 2 });
+  assert.equal(clean.last, 'l01');
+  const wrapped = plain(normaliseStore({ version: 1, data: clean }));
+  assert.deepEqual(wrapped, clean);
+  assert.throws(() => normaliseStore({ unexpected: true }));
+  assert.notEqual(emptyStore(), emptyStore());
+});
+
+test('learner-facing labels do not contain the old completion instructions', () => {
+  assert.doesNotMatch(html, /Mark Complete/);
+  assert.doesNotMatch(html, /Day \$\{/);
+  assert.match(html, /role="progressbar"/);
+  assert.match(html, /aria-live="polite"/);
+  assert.match(html, /for="searchBox"/);
+});

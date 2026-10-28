@@ -4,7 +4,7 @@ A no-build learning website for complete beginners. It includes 68 lessons in 11
 
 ## Open the course
 
-The course is online at **https://karlj415.github.io/cybersec/**. Nothing to install; progress is saved in your browser.
+The course is online at **https://karlj415.github.io/cybersec/**. Nothing to install; progress is saved in your browser, and **Sign in** syncs it across browsers and VMs.
 
 ### Get the lab files into a VM
 
@@ -33,7 +33,7 @@ Open http://127.0.0.1:8765/ in your browser. Stop the server later with Ctrl+C.
 
 When opened directly from disk, lessons show a video thumbnail and direct YouTube link instead of a broken player. Videos, Google Fonts, and external resource links need an internet connection; system fonts are used if Google Fonts is unavailable.
 
-**Choose one opening method and keep using it.** Browser storage for the website, `file://` and `http://127.0.0.1:8765` is separate. Use **Save backup** before switching, then **Restore backup** at the new location.
+Browser storage for the website, `file://` and `http://127.0.0.1:8765` is separate. **Sign in** (see [Sync across browsers and VMs](#sync-across-browsers-and-vms)) to share progress between them, or use **Save backup** and **Restore backup**.
 
 ## How to study
 
@@ -60,6 +60,25 @@ Progress, practical ticks, and quiz scores save automatically in this browser us
 - If saved data is malformed, CyberPath preserves a recovery copy where browser storage is available and shows a warning instead of failing with an empty roadmap.
 
 Clearing browser site data or using private browsing can remove progress. Keep a backup if the work matters to you.
+
+### Sync across browsers and VMs
+
+**Sign in** keeps progress the same in every browser and VM. It is built for one person and needs no server: progress lives in a secret GitHub Gist, and the site talks to the GitHub API directly.
+
+One-time setup, on your own computer:
+
+1. Create a fine-grained token at https://github.com/settings/personal-access-tokens/new with **Account permissions > Gists: Read and write** and nothing else. (A classic token with only the `gist` scope also works.)
+2. Run `node scripts/setup-sync.mjs`, paste the token, and choose a passphrase. It creates the gist and writes `sync-config.js`.
+3. Commit and push `sync-config.js`.
+
+Then in any browser: **Sign in**, enter the passphrase. You stay signed in on that browser until **Sign out**.
+
+- Changes upload about 1.5 seconds after you make them, and the page pulls the latest copy when it loads or when you come back to the tab.
+- Progress already in a browser when you first sign in is merged with the synced copy, not thrown away. If two browsers change things offline, ticks and completions from both are kept.
+- **Reset** and **Restore backup** replace the synced copy everywhere.
+- `sync-config.js` holds the token and gist id encrypted with your passphrase (PBKDF2-SHA256, 600,000 rounds, then AES-256-GCM). It is public, so the passphrase is the only lock: use a long one. If the token leaks, the worst case is read and write access to your gists.
+- After signing in, the decrypted token is kept in that browser's `localStorage`. Every GitHub Pages project under `karlj415.github.io` shares that storage, so only sign in where you trust the scripts.
+- New token or new passphrase: run `node scripts/setup-sync.mjs --gist <gist id>` to reuse the same gist, then push and sign in again.
 
 ## The path
 
@@ -102,7 +121,7 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-This checks a 320-pixel viewport, keyboard selection and focus, search, the local-file video fallback, and answer persistence through navigation and reload. It also drives the SQL injection, XSS and access-control lab apps through their real forms. External requests are blocked in this test; live video playback and screen-reader behavior require manual checks.
+This checks a 320-pixel viewport, keyboard selection and focus, search, the local-file video fallback, and answer persistence through navigation and reload. It also drives the SQL injection, XSS and access-control lab apps through their real forms. The sync test runs two separate browsers against a fake GitHub Gist API: sign-in, upload, merge, unticking, reset and a revoked token. External requests are blocked in this test; live video playback and screen-reader behavior require manual checks.
 
 Quiz selections and checked feedback now return when reopening a lesson. Changing an answer clears the previous score and feedback until you check again. Existing version 1 backups remain compatible. Restore asks before replacing partial work as well as completed lessons, and rejects unsupported backup versions.
 

@@ -64,6 +64,12 @@ pre{background:#0a0f0c;border:1px solid var(--line);padding:14px;border-radius:1
 .notice{background:#122a1d;border:1px solid var(--green2);border-radius:12px;padding:16px}
 .warn{background:#2b1717;border:1px solid #6b2a2a;border-radius:12px;padding:16px}
 .hidden{display:none!important}
+#syncBtn.sync-ok{border-color:var(--green2)}#syncBtn.sync-error{border-color:var(--red);color:var(--red)}
+#syncDialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:var(--radius);padding:22px;width:min(420px,calc(100vw - 32px))}
+#syncDialog::backdrop{background:rgba(0,0,0,.6)}
+#syncDialog h2{margin:0 0 8px;font-size:20px}
+#syncDialog input[type=password]{width:100%;margin:10px 0;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit}
+#syncDialog .row{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-top:12px}
 .machines{margin:10px 0 4px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .machine{display:inline-block;padding:2px 9px;margin-right:4px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
 .badge{display:inline-block;padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);font-size:12px;font-weight:700}
@@ -99,7 +105,22 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid var(-
 <button onclick="exportProgress()">Save backup</button>
 <button onclick="$('importFile').click()">Restore backup</button>
 <button onclick="resetProgress()">Reset</button>
+<button id="syncBtn" onclick="openSyncDialog()">Sign in</button>
 </nav></div></header>
+<dialog id="syncDialog" aria-labelledby="syncTitle">
+<form id="syncSignIn" onsubmit="event.preventDefault();signIn()">
+<h2 id="syncTitle">Sign in to sync</h2>
+<p class="small muted" style="margin:0">Your progress follows you to every browser and VM where you sign in.</p>
+<input id="syncPass" type="password" autocomplete="current-password" aria-label="Sync passphrase" placeholder="Passphrase">
+<p id="syncSignInMsg" class="small" role="alert" style="margin:0;color:var(--red)"></p>
+<div class="row"><button type="button" class="btn" onclick="closeSyncDialog()">Cancel</button><button class="btn primary">Sign in</button></div>
+</form>
+<div id="syncSignedIn" class="hidden">
+<h2>Progress sync</h2>
+<p id="syncStatusText" class="small" role="status" style="margin:0"></p>
+<div class="row"><button type="button" class="btn" onclick="signOut()">Sign out</button><button type="button" class="btn" onclick="syncNow()">Sync now</button><button type="button" class="btn primary" onclick="closeSyncDialog()">Close</button></div>
+</div>
+</dialog>
 <input id="importFile" type="file" accept="application/json,.json" hidden onchange="importProgress(event)">
 
 <main class="wrap">
@@ -152,8 +173,9 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid var(-
 <div id="lessonContent" style="margin-top:16px"></div>
 </section>
 </main>
-<footer>CyberPath • Learn slowly, practise legally, ask “why?” a lot. Progress is stored in this browser; use Save backup and Restore backup for a portable copy.</footer>
+<footer>CyberPath • Learn slowly, practise legally, ask “why?” a lot. Progress is stored in this browser; sign in to sync it across browsers, or use Save backup and Restore backup for a portable copy.</footer>
 
+<script src="sync-config.js"></script>
 <script>
 const KEY="cyberpath_v1";
 const RECOVERY_KEY=KEY+"_corrupt_backup";
@@ -194,12 +216,190 @@ function loadStore(){
 		return emptyStore();
 	}
 }
-function save(){
+function writeLocal(){
 	try{localStorage.setItem(KEY,JSON.stringify(store));storageIssue="";showStorageNotice();return true}catch{
 		storageIssue="Progress could not be saved in this browser. Use Save backup now to download your progress.";
 		showStorageNotice();
 		return false;
 	}
+}
+function save(){
+	const ok=writeLocal();
+	syncChanged();
+	return ok;
+}
+
+// ---- Cross-browser sync -------------------------------------------------
+// Progress is mirrored to a secret GitHub Gist. sync-config.js holds the gist
+// id and a gists-only token, encrypted with the sign-in passphrase.
+// Each upload gets a random `rev`. A browser remembers the rev it last synced
+// (`base`) and whether it has unsent changes (`dirty`):
+//   remote rev == base           -> nobody else wrote: upload if dirty
+//   remote rev != base, clean    -> another browser wrote: take its copy
+//   remote rev != base, dirty    -> both wrote: merge (union), then upload
+// `force` (set by Reset and Restore backup) uploads without merging.
+const SYNC_AUTH_KEY="cyberpath_sync_auth";
+const SYNC_META_KEY="cyberpath_sync_meta";
+const SYNC_FILE="cyberpath-progress.json";
+const sync={auth:null,meta:{base:null,dirty:false,force:false},state:"off",error:"",lastAt:0,seq:0,timer:null,running:null,again:false};
+function readJSON(key){try{return JSON.parse(localStorage.getItem(key))}catch{return null}}
+function writeJSON(key,value){try{value==null?localStorage.removeItem(key):localStorage.setItem(key,JSON.stringify(value))}catch{}}
+function fromBase64(text){return Uint8Array.from(atob(text),c=>c.charCodeAt(0))}
+async function unlockSync(passphrase){
+	const config=window.CYBERPATH_SYNC;
+	if(!config)throw new Error("Sync is not set up yet. Run node scripts/setup-sync.mjs on your computer, then commit and push sync-config.js.");
+	if(!window.crypto||!crypto.subtle)throw new Error("This page needs HTTPS, localhost or a local file to sign in.");
+	const base=await crypto.subtle.importKey("raw",new TextEncoder().encode(passphrase),"PBKDF2",false,["deriveKey"]);
+	const key=await crypto.subtle.deriveKey({name:"PBKDF2",salt:fromBase64(config.salt),iterations:config.iterations,hash:"SHA-256"},base,{name:"AES-GCM",length:256},false,["decrypt"]);
+	let plain;
+	try{plain=await crypto.subtle.decrypt({name:"AES-GCM",iv:fromBase64(config.iv)},key,fromBase64(config.data))}catch{throw new Error("Wrong passphrase.")}
+	const auth=JSON.parse(new TextDecoder().decode(plain));
+	if(!auth||typeof auth.token!=="string"||typeof auth.gist!=="string")throw new Error("sync-config.js is damaged. Run the setup script again.");
+	return auth;
+}
+async function gist(method,body){
+	const response=await fetch("https://api.github.com/gists/"+encodeURIComponent(sync.auth.gist),{
+		method,cache:"no-store",
+		headers:{Authorization:"Bearer "+sync.auth.token,Accept:"application/vnd.github+json",...(body?{"Content-Type":"application/json"}:{})},
+		body:body&&JSON.stringify(body)
+	});
+	if(response.status===401){const error=new Error("GitHub rejected the sync token (expired or revoked). Make a new one with the setup script, then sign in again.");error.auth=true;throw error}
+	if(!response.ok)throw new Error("GitHub returned "+response.status+(response.status===404?": the gist or its permission is missing.":"."));
+	return response.json();
+}
+function remoteProgress(gistJSON){
+	const file=gistJSON.files&&gistJSON.files[SYNC_FILE];
+	if(!file||!file.content)return null;
+	try{const parsed=JSON.parse(file.content);return {rev:String(parsed.rev),data:normaliseStore(parsed.data)}}catch{return null}
+}
+function mergeStores(a,b){
+	const merged=emptyStore();
+	merged.done=[...a.done,...b.done];
+	for(const l of ALL){
+		const labsA=a.labs[l.id]||[],labsB=b.labs[l.id]||[];
+		merged.labs[l.id]=l.lab.map((_,i)=>labsA[i]===true||labsB[i]===true);
+		const scoreA=a.quiz[l.id]??-1,scoreB=b.quiz[l.id]??-1;
+		if(Math.max(scoreA,scoreB)>=0)merged.quiz[l.id]=Math.max(scoreA,scoreB);
+		const answers=(scoreB>scoreA?b.answers[l.id]:a.answers[l.id])||a.answers[l.id]||b.answers[l.id];
+		if(answers)merged.answers[l.id]=answers;
+	}
+	merged.last=a.last||b.last;
+	return normaliseStore(merged);
+}
+function setSync(state,error=""){
+	sync.state=state;sync.error=error;
+	const button=$("syncBtn");
+	if(!button)return;
+	button.textContent={off:"Sign in",pending:"☁ Saving…",busy:"☁ Syncing…",ok:"☁ Synced",error:"☁ Sync error"}[state];
+	button.classList.toggle("sync-ok",state==="ok");
+	button.classList.toggle("sync-error",state==="error");
+	button.title=error||"";
+	const text=$("syncStatusText");
+	if(text)text.textContent=state==="error"?error:state==="ok"?"Synced "+new Date(sync.lastAt).toLocaleTimeString()+". Changes upload a moment after you make them.":"Syncing…";
+}
+function syncChanged(){
+	sync.seq++;
+	if(!sync.auth)return;
+	sync.meta.dirty=true;
+	writeJSON(SYNC_META_KEY,sync.meta);
+	clearTimeout(sync.timer);
+	sync.timer=setTimeout(syncNow,1500);
+	if(sync.state!=="error")setSync("pending");
+}
+function syncForce(){
+	if(!sync.auth)return;
+	sync.meta.force=true;
+	writeJSON(SYNC_META_KEY,sync.meta);
+}
+let currentLesson=null;
+function refreshView(){
+	if(currentLesson&&!$("lessonView").classList.contains("hidden")){
+		const y=window.scrollY;
+		openLesson(currentLesson,true);
+		window.scrollTo(0,y);
+	}else renderRoadmap();
+}
+function syncNow(){
+	clearTimeout(sync.timer);
+	if(!sync.auth)return Promise.resolve();
+	if(sync.running){sync.again=true;return sync.running}
+	sync.running=(async()=>{
+		setSync("busy");
+		try{
+			const seq=sync.seq;
+			const remote=remoteProgress(await gist("GET"));
+			let upload=false;
+			if(!remote||sync.meta.force)upload=true;
+			else if(remote.rev===sync.meta.base)upload=sync.meta.dirty;
+			else if(sync.meta.dirty){
+				store=mergeStores(store,remote.data);
+				writeLocal();refreshView();upload=true;
+			}else{
+				if(JSON.stringify(remote.data)!==JSON.stringify(normaliseStore(store))){store=remote.data;writeLocal();refreshView()}
+				sync.meta.base=remote.rev;
+			}
+			if(upload){
+				const rev=Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+				await gist("PATCH",{files:{[SYNC_FILE]:{content:JSON.stringify({version:1,rev,savedAt:new Date().toISOString(),data:normaliseStore(store)})}}});
+				sync.meta.base=rev;
+			}
+			// Edits made while this request was in flight still need uploading.
+			if(sync.seq===seq){sync.meta.dirty=false;sync.meta.force=false}
+			writeJSON(SYNC_META_KEY,sync.meta);
+			sync.lastAt=Date.now();
+			setSync("ok");
+		}catch(error){
+			const message=error instanceof TypeError?"Could not reach GitHub. Changes are kept here and upload when you are back online.":error.message;
+			if(error.auth){signOut(true);alert(message)}
+			else setSync("error",message);
+		}finally{
+			sync.running=null;
+			if(sync.again){sync.again=false;syncNow()}
+		}
+	})();
+	return sync.running;
+}
+function openSyncDialog(){
+	const signedIn=Boolean(sync.auth);
+	$("syncSignIn").classList.toggle("hidden",signedIn);
+	$("syncSignedIn").classList.toggle("hidden",!signedIn);
+	if(signedIn)setSync(sync.state,sync.error);
+	const dialog=$("syncDialog");
+	if(!dialog.open)dialog.showModal();
+	if(!signedIn)$("syncPass").focus();
+}
+function closeSyncDialog(){$("syncDialog").close();$("syncPass").value=""}
+async function signIn(){
+	const message=$("syncSignInMsg");
+	message.textContent="Checking…";
+	try{
+		sync.auth=await unlockSync($("syncPass").value);
+		writeJSON(SYNC_AUTH_KEY,sync.auth);
+		// Progress already in this browser is merged with the synced copy, not thrown away.
+		sync.meta={base:null,dirty:hasProgress(),force:false};
+		writeJSON(SYNC_META_KEY,sync.meta);
+		message.textContent="";
+		closeSyncDialog();
+		await syncNow();
+	}catch(error){message.textContent=error.message}
+}
+function signOut(silent){
+	if(!silent&&!confirm("Sign out of sync in this browser? Progress stays here but stops syncing."))return;
+	sync.auth=null;sync.meta={base:null,dirty:false,force:false};
+	writeJSON(SYNC_AUTH_KEY,null);writeJSON(SYNC_META_KEY,null);
+	clearTimeout(sync.timer);
+	setSync("off");
+	if($("syncDialog").open)closeSyncDialog();
+}
+function startSync(){
+	// Pull when you come back to this tab; push before it goes to the background.
+	document.addEventListener("visibilitychange",()=>{if(sync.auth&&(document.visibilityState==="visible"||sync.meta.dirty))syncNow()});
+	window.addEventListener("online",()=>{if(sync.auth)syncNow()});
+	const auth=readJSON(SYNC_AUTH_KEY);
+	if(!auth||typeof auth.token!=="string"||typeof auth.gist!=="string"){setSync("off");return}
+	sync.auth=auth;
+	sync.meta={base:null,dirty:false,force:false,...readJSON(SYNC_META_KEY)};
+	syncNow();
 }
 function isDone(id){return store.done.includes(id)}
 function xp(){return store.done.length*20}
@@ -436,11 +636,12 @@ function renderPrerequisites(l){
  if(!l.prerequisites.length)return '<p class="small">Start here: no earlier lessons required.</p>';
  return '<aside class="notice" aria-label="Lesson prerequisites" style="margin:16px 0"><b>Before you start</b><p>Work through these first. You can revisit any lesson; these are readiness guidance, not locked gates.</p>'+l.prerequisites.map(id=>{const prerequisite=ALL.find(item=>item.id===id);return '<button class="btn" style="margin:4px" onclick="openLesson(\''+id+'\')">'+(isDone(id)?'✓ ':'Review: ')+prerequisite.t+'</button>'}).join('')+'</aside>';
 }
-function openLesson(id){
+// `redraw` re-renders the open lesson after a sync without moving or saving anything.
+function openLesson(id,redraw){
 	const l=ALL.find(x=>x.id===id);
 	if(!l)return;
-	store.last=id;
-	save();
+	currentLesson=id;
+	if(!redraw){store.last=id;save()}
 	$("homeView").classList.add("hidden");
 	$("lessonView").classList.remove("hidden");
 	$("navHome").classList.remove("active");
@@ -475,6 +676,7 @@ function openLesson(id){
 		<p style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px">${prev?`<button class="btn" onclick="openLesson('${prev.id}')">← ${prev.t}</button>`:"<span></span>"}${next?`<button class="btn" onclick="openLesson('${next.id}')">${next.t} →</button>`:""}</p>
 	</div>`;
 	if(Object.hasOwn(store.quiz,id))showQuizFeedback(id);
+	if(redraw)return;
 	scrollToTop();
 	$("lessonTitle").focus({preventScroll:true});
 }
@@ -567,6 +769,7 @@ async function importProgress(event){
 		const imported=normaliseStore(JSON.parse(await file.text()));
 		if(hasProgress()&&!confirm("Replace the progress in this browser with this backup? Save a backup first if you want to keep the current copy."))return;
 		store=imported;
+		syncForce();
 		save();
 		$("searchBox").value="";
 		showHome();
@@ -576,8 +779,9 @@ async function importProgress(event){
 	}finally{input.value=""}
 }
 function resetProgress(){
-	if(!confirm("Reset ALL progress? This cannot be undone. Save a backup first if you want to keep it."))return;
+	if(!confirm("Reset ALL progress"+(sync.auth?" in every signed-in browser":"")+"? This cannot be undone. Save a backup first if you want to keep it."))return;
 	store=emptyStore();
+	syncForce();
 	save();
 	$("searchBox").value="";
 	showHome();
@@ -586,6 +790,7 @@ function resetProgress(){
 function initialise(){
 	renderRoadmap();
 	showStorageNotice();
+	startSync();
 }
 initialise();
 </script>

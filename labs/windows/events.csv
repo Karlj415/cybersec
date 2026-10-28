@@ -1,0 +1,8 @@
+Record,TimeUtc,Host,Provider,EventId,Account,LogonId,LogonType,SourceIp,Process,Note
+1,2026-01-12T10:00:00Z,LAB-WIN,Microsoft-Windows-Security-Auditing,4625,labstudent,0x0,3,10.77.0.20,,Synthetic failed network logon
+2,2026-01-12T10:01:00Z,LAB-WIN,Microsoft-Windows-Security-Auditing,4625,labstudent,0x0,3,10.77.0.20,,Synthetic repeated failure
+3,2026-01-12T10:02:00Z,LAB-WIN,Microsoft-Windows-Security-Auditing,4624,labstudent,0x42,3,10.77.0.20,,Synthetic successful network logon
+4,2026-01-12T10:02:10Z,LAB-OTHER,Microsoft-Windows-Security-Auditing,4624,labstudent,0x42,3,10.77.0.30,,Different host with same synthetic logon ID
+5,2026-01-12T10:03:00Z,LAB-WIN,Microsoft-Windows-Security-Auditing,4688,labstudent,0x42,,,powershell.exe,Synthetic process attributed to the successful session
+6,2026-01-12T10:04:00Z,LAB-WIN,Microsoft-Windows-Security-Auditing,4688,maintenance,0x99,,,notepad.exe,Unrelated local maintenance session
+7,2026-01-12T10:05:00Z,LAB-WIN,CyberPath-Training-Lookalike,14624,labstudent,0x42,,,,Intentionally invented event ID to expose substring matching

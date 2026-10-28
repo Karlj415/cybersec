@@ -18,7 +18,8 @@ const blockedStatuses = new Set([401, 403, 429]);
 
 async function fetchStatus(url) {
   let lastError;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // Three tries: some sites (neverssl.com) answer anywhere from 1 to 20+ seconds.
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const response = await fetch(url, {
         redirect: 'follow',
@@ -26,11 +27,11 @@ async function fetchStatus(url) {
         headers: { 'user-agent': 'Mozilla/5.0 CyberPath-link-check' },
       });
       await response.body?.cancel();
-      if (response.status >= 500 && attempt === 0) continue;
+      if (response.status >= 500 && attempt < 2) continue;
       return { ok: response.status < 400, blocked: blockedStatuses.has(response.status), status: response.status, url };
     } catch (error) {
       lastError = error;
-      if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 750));
+      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 750));
     }
   }
   return { ok: false, blocked: false, status: 0, url, error: lastError?.message };

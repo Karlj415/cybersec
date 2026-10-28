@@ -24,9 +24,9 @@ const { PHASES, ALL, VIDEOS, orderedOptions, lessonSearchText, normaliseStore, e
 const plain = value => JSON.parse(JSON.stringify(value));
 
 test('the curriculum has complete, uniquely identified lessons', () => {
-  assert.equal(PHASES.length, 9);
-  assert.equal(ALL.length, 48);
-  assert.equal(new Set(ALL.map(lesson => lesson.id)).size, 48);
+  assert.equal(PHASES.length, 11);
+  assert.equal(ALL.length, 68);
+  assert.equal(new Set(ALL.map(lesson => lesson.id)).size, 68);
   for (const lesson of ALL) {
     assert.match(lesson.id, /^l\d{2}$/);
     assert.ok(lesson.t.length > 5);
@@ -44,11 +44,11 @@ test('the curriculum has complete, uniquely identified lessons', () => {
   }
 });
 
-test('every lesson has a complete, uniquely selected video', () => {
+test('every lesson has a selected video or an explicit guided-reading route', () => {
   const entries = Object.entries(VIDEOS);
-  assert.equal(entries.length, 48);
-  assert.deepEqual(plain(entries.map(([lessonId]) => lessonId).sort()), plain(ALL.map(lesson => lesson.id).sort()));
-  assert.equal(new Set(entries.map(([, video]) => video.id)).size, 48);
+  assert.equal(entries.length, 57);
+  assert.deepEqual(plain(entries.map(([lessonId]) => lessonId).sort()), plain(ALL.filter(lesson => !lesson.readingFirst).map(lesson => lesson.id).sort()));
+  assert.equal(new Set(entries.map(([, video]) => video.id)).size, 57);
   for (const [lessonId, video] of entries) {
     assert.match(lessonId, /^l\d{2}$/);
     assert.match(video.id, /^[A-Za-z0-9_-]{11}$/);
@@ -60,7 +60,12 @@ test('every lesson has a complete, uniquely selected video', () => {
   assert.match(html, /const selectedVideo=VIDEOS\[id\]/);
   assert.match(html, /location\.protocol!=="file:"/);
   assert.match(html, /class="video-thumbnail"/);
-  assert.match(html, /Every lesson includes a selected, verified beginner video/);
+  assert.match(html, /the lesson uses guided reading with official sources/);
+  for (const lesson of ALL.filter(lesson => lesson.readingFirst)) {
+    assert.ok(lesson.links.length > 0, lesson.id);
+    assert.ok(lesson.deepDive.length > 500, lesson.id);
+    assert.equal(lesson.explanations.length, lesson.quiz.length);
+  }
 });
 
 test('displayed answer positions are balanced and stable', () => {
@@ -115,6 +120,20 @@ test('resource links use expected web protocols', () => {
   }
 });
 
+test('lesson text names other lessons and phases instead of numbering them', () => {
+  // Displayed numbers shift whenever a lesson or phase is inserted.
+  const numbered = /\b(?:lesson|phase|day)\s+\d+/i;
+  const check = (value, where) => {
+    if (typeof value === 'string') assert.doesNotMatch(value, numbered, where);
+    else if (Array.isArray(value)) value.forEach((item, index) => check(item, `${where}[${index}]`));
+  };
+  for (const lesson of ALL) {
+    for (const [field, value] of Object.entries(lesson)) {
+      if (field !== 'phase') check(value, `${lesson.id}.${field}`);
+    }
+  }
+});
+
 test('search includes explanations, terms, and practical content', () => {
   assert.ok(lessonSearchText(ALL.find(lesson => lesson.id === 'l32')).includes('csrf'));
   assert.ok(lessonSearchText(ALL.find(lesson => lesson.id === 'l30')).includes('salt'));
@@ -144,4 +163,83 @@ test('learner-facing labels do not contain the old completion instructions', () 
   assert.match(html, /role="progressbar"/);
   assert.match(html, /aria-live="polite"/);
   assert.match(html, /for="searchBox"/);
+});
+
+
+test('prerequisites exist earlier in the path and cannot form forward dependencies', () => {
+  const positions = new Map(ALL.map((lesson, index) => [lesson.id, index]));
+  for (const lesson of ALL) {
+    assert.ok(Array.isArray(lesson.prerequisites), lesson.id);
+    assert.equal(new Set(lesson.prerequisites).size, lesson.prerequisites.length);
+    for (const prerequisite of lesson.prerequisites) {
+      assert.ok(positions.has(prerequisite), `${lesson.id}: missing ${prerequisite}`);
+      assert.ok(positions.get(prerequisite) < positions.get(lesson.id), `${lesson.id}: prerequisite ${prerequisite} must come first`);
+    }
+  }
+  assert.ok(ALL.find(l => l.id === 'l32').prerequisites.includes('l49'));
+  assert.ok(positions.get('l26') < positions.get('l49'));
+  assert.ok(positions.get('l37') < positions.get('l50'));
+  assert.ok(positions.get('l59') < positions.get('l38'));
+});
+
+test('old progress remains valid and new lessons contribute to course completion', () => {
+  const old = Array.from({length:48}, (_, i) => 'l' + String(i + 1).padStart(2, '0'));
+  const restored = normaliseStore({done:old, labs:{}, quiz:{}, last:'l32'});
+  assert.equal(restored.done.length, 48);
+  assert.equal(restored.last, 'l32');
+  assert.equal(ALL.find(l => !restored.done.includes(l.id)).id, 'l60');
+});
+
+test('the JavaScript prerequisite displays the supplied runnable example', () => {
+  const bridge = ALL.find(lesson => lesson.id === 'l49');
+  assert.match(bridge.t, /JavaScript/);
+  const displayed = bridge.deepDive.match(/<pre><code>([\s\S]*?)<\/code><\/pre>/)[1]
+    .replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
+  const runnable = fs.readFileSync(path.join(root, 'labs/javascript/bridge.mjs'), 'utf8');
+  assert.equal(displayed, runnable);
+  const sql = ALL.find(lesson => lesson.id === 'l32');
+  assert.match(sql.deepDive, /node app\.mjs/);
+  assert.match(sql.deepDive, /\.all\(\.\.\.parameters\)/);
+  assert.ok(sql.prerequisites.includes(bridge.id));
+});
+
+test('web-security lessons follow SQL injection and show the real lab code', () => {
+  const ids = ALL.map(lesson => lesson.id);
+  assert.deepEqual(plain(ids.slice(ids.indexOf('l32'), ids.indexOf('l32') + 4)), ['l32', 'l62', 'l63', 'l33']);
+  assert.deepEqual(plain(ALL.find(lesson => lesson.id === 'l33').prerequisites), ['l63']);
+  const decode = text => text.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
+  for (const [id, folder, port] of [['l62', 'xss', 8767], ['l63', 'access-control', 8768]]) {
+    const lesson = ALL.find(item => item.id === id);
+    const source = fs.readFileSync(path.join(root, 'labs', folder, 'app.mjs'), 'utf8');
+    assert.ok(source.includes(`?? ${port})`), `${folder} default port`);
+    assert.match(lesson.deepDive, new RegExp(`labs/${folder}/README\\.md`));
+    assert.ok(fs.existsSync(path.join(root, 'labs', folder, 'README.md')));
+    for (const [, shown] of lesson.deepDive.matchAll(/<pre><code>([\s\S]*?)<\/code><\/pre>/g)) {
+      const code = decode(shown);
+      if (code.startsWith('<img')) continue; // attack input, not app source
+      for (const line of code.split('\n')) assert.ok(source.includes(line.trim()), `${id} shows code missing from ${folder}/app.mjs: ${line}`);
+    }
+  }
+  const search = id => lessonSearchText(ALL.find(lesson => lesson.id === id));
+  assert.ok(search('l62').includes('output encoding'));
+  assert.ok(search('l63').includes('samesite'));
+});
+
+test('the Arch phase sits between defensive security and Windows, and its AUR sample stays inert', () => {
+  const ids = ALL.map(lesson => lesson.id);
+  assert.deepEqual(plain(ids.slice(ids.indexOf('l37') + 1, ids.indexOf('l37') + 7)), ['l64', 'l65', 'l66', 'l67', 'l68', 'l50']);
+  assert.match(PHASES.find(phase => phase.id === 'pa').title, /^Phase 7 — Arch Linux/);
+  for (const lesson of ALL.filter(item => ['l64', 'l65', 'l66', 'l67', 'l68'].includes(item.id))) {
+    assert.match(lesson.deepDive, /labs\/arch\/README\.md/, lesson.id);
+  }
+  assert.ok(fs.existsSync(path.join(root, 'labs', 'arch', 'README.md')));
+  // The review exercise must never be buildable into anything real.
+  const folder = path.join(root, 'labs', 'arch', 'aur-review');
+  assert.ok(!fs.existsSync(path.join(folder, 'PKGBUILD')), 'keep the sample out of makepkg\'s default file name');
+  for (const name of fs.readdirSync(folder)) {
+    const text = fs.readFileSync(path.join(folder, name), 'utf8');
+    for (const [url] of text.matchAll(/[a-z+]+:\/\/[^\s"')]+/g)) {
+      assert.match(new URL(url.replace(/^git\+/, '')).hostname, /\.invalid$/, `${name}: ${url}`);
+    }
+  }
 });

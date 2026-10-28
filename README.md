@@ -4,6 +4,23 @@ A no-build learning website for complete beginners. It includes 68 lessons in 11
 
 ## Open the course
 
+The course is online at **https://karlj415.github.io/cybersec/**. Nothing to install; progress is saved in your browser.
+
+### Get the lab files into a VM
+
+The practical labs run inside your own VMs, so each VM needs a copy of this repository. No GitHub account is needed.
+
+```bash
+git clone https://github.com/Karlj415/cybersec.git ~/cybersec
+```
+
+- **Ubuntu or Kali:** install git first if `git --version` says `command not found` (`sudo apt install git`).
+- **Omarchy:** git is already installed.
+- **Windows:** open https://github.com/Karlj415/cybersec in Edge, choose **Code > Download ZIP** and extract it (the folder is `cybersec-main`).
+- **No internet in the VM:** use a shared folder or copy a zip over, as the lessons describe.
+
+### Run it locally
+
 Double-clicking **`index.html`** opens the full reading, practical work, quizzes, and progress tracking. No package installation or build command is needed. For **inline video playback**, use the local server because YouTube blocks embedded players on `file://` pages.
 
 With Node.js installed, open a terminal in the project folder and run:
@@ -16,7 +33,7 @@ Open http://127.0.0.1:8765/ in your browser. Stop the server later with Ctrl+C.
 
 When opened directly from disk, lessons show a video thumbnail and direct YouTube link instead of a broken player. Videos, Google Fonts, and external resource links need an internet connection; system fonts are used if Google Fonts is unavailable.
 
-**Choose one opening method and keep using it.** Browser storage for `file://` and `http://127.0.0.1:8765` is separate. Use **Save backup** before switching, then **Restore backup** at the new location.
+**Choose one opening method and keep using it.** Browser storage for the website, `file://` and `http://127.0.0.1:8765` is separate. Use **Save backup** before switching, then **Restore backup** at the new location.
 
 ## How to study
 

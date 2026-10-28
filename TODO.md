@@ -7,7 +7,7 @@ Handoff notes for the next working session. Read this whole file before starting
 CyberPath is a no-build cybersecurity course for complete beginners: one `index.html` (68 lessons in 11 phases), local labs in `labs/`, tests in `tests/`. See `README.md` for how it works.
 
 - **Where lessons live:** in `index.html` inside `const PHASES=[...]`. Each lesson is one line of valid JSON, so edit lessons by parsing and rewriting that line with a script. Hand-editing those long lines is error-prone.
-- **Lesson fields:** `id`, `t` (title), `m` (minutes), `a` (analogy), `b` (3 paragraphs), `terms`, `lab` (exactly 3 steps), `quiz` (exactly 3 questions of `[question, [3 options], correctIndex]`), `prerequisites`, optional `links`, `deepDive`, `explanations`.
+- **Lesson fields:** `id`, `t` (title), `m` (minutes), `a` (analogy), `b` (3 paragraphs), `terms`, `lab` (exactly 3 steps), `quiz` (exactly 3 questions of `[question, [3 options], correctIndex]`), `prerequisites`, `where` (exactly 3 machine codes, one per lab step: `host`, `phone`, `paper`, `ubuntu`, `ubuntu-or-kali`, `omarchy`, `windows-vm`, `windows-any`; labels live in `MACHINES`), optional `links`, `deepDive`, `explanations`.
 - **Reading lessons:** lessons without a video set `readingFirst: true` and need `links`, a `deepDive` longer than 500 characters, and one `explanations` entry per quiz question.
 - **Answer positions:** `orderedOptions()` in `index.html` shifts each question's displayed options by `(lesson number + question index) % 3`. Tests require the displayed answer letters to be balanced, and no single letter may pass more than 5 lessons. For new lessons, give each question's correct answer a different displayed letter.
 - **Lesson IDs are permanent:** they are stored in learners' saved progress. Never renumber or reuse an ID. New lessons get new IDs (next free: `l69`).
@@ -24,7 +24,7 @@ npm run test:browser # Playwright: renders every lesson at 320px and 1280px
 
 Tests hardcode the lesson count (`tests/curriculum.test.cjs`, `tests/interactions.test.cjs`). Update these when adding lessons, along with the counts in `README.md`.
 
-Nothing has been committed since the initial commit. Do not commit unless the user asks.
+Do not commit unless the user asks.
 
 ## 1. Verify the Windows phase against a real Windows VM (done 2026-10-27)
 
@@ -119,3 +119,7 @@ New Phase 7 between Defensive Security and Windows (Windows, Pen Testing and Rev
 - [x] Authored explanations for the 47 lessons that had none (l01-l48 except l32): 141 entries, each saying why the right answer is right and, where it helps, why the tempting wrong one is not. `tests/curriculum.test.cjs` now requires one explanation per quiz question for every lesson.
 - [x] README "Remaining verification" rewritten: it listed the Windows and Ubuntu walkthroughs as not done.
 
+
+## 7. Machine labels (done 2026-10-28)
+
+- [x] Every lesson has a `where` array; the lesson view shows "Where you'll work", each lab step shows its machine, roadmap cards list the machines, and search matches the labels. `tests/curriculum.test.cjs` checks every step has a valid code.

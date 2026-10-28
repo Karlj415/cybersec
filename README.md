@@ -25,6 +25,7 @@ When opened directly from disk, lessons show a video thumbnail and direct YouTub
 - Most lessons take 20–30 minutes. VM setup, downloads, and external labs can take an hour or more; taking longer is expected.
 - Each lesson follows an analogy, selected video or guided reading, worked explanation, three practical steps, and three quiz questions. Checking the quiz explains why each answer is right.
 - 57 of the 68 lessons have a selected video with title, channel, duration, and verification metadata. The eleven without one (the three JavaScript lessons, the Windows VM setup, identity/UAC and NTFS lessons, and the five Arch Linux lessons) use guided reading with official sources, because no video matched them closely; video searches are optional. Use the YouTube fallback if an embed cannot play.
+- Every lesson shows **Where you'll work** under its title, and every practical step carries a label for the machine it runs on: Your Mac or Windows PC, Your phone, Notebook (no computer), Ubuntu VM, Ubuntu or Kali VM, Omarchy VM, Windows VM, or Windows PC or Windows VM. The roadmap cards show the same list, and search matches it (for example, search "omarchy vm").
 - To complete a lesson, tick all three practical steps and score at least **2/3** in the quiz. Retries have no penalty.
 - **Continue** returns to your unfinished lesson when possible, otherwise it finds the next incomplete lesson.
 

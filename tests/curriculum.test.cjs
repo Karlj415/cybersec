@@ -17,10 +17,10 @@ const context = {
 vm.createContext(context);
 vm.runInContext(
   script.slice(0, initialisation) +
-    '\n;globalThis.APP={PHASES,ALL,VIDEOS,orderedOptions,lessonSearchText,normaliseStore,emptyStore};',
+    '\n;globalThis.APP={PHASES,ALL,VIDEOS,MACHINES,orderedOptions,lessonSearchText,normaliseStore,emptyStore};',
   context,
 );
-const { PHASES, ALL, VIDEOS, orderedOptions, lessonSearchText, normaliseStore, emptyStore } = context.APP;
+const { PHASES, ALL, VIDEOS, MACHINES, orderedOptions, lessonSearchText, normaliseStore, emptyStore } = context.APP;
 const plain = value => JSON.parse(JSON.stringify(value));
 
 test('the curriculum has complete, uniquely identified lessons', () => {
@@ -245,4 +245,17 @@ test('the Arch phase sits between defensive security and Windows, and its AUR sa
       assert.match(new URL(url.replace(/^git\+/, '')).hostname, /\.invalid$/, `${name}: ${url}`);
     }
   }
+});
+
+test('every practical step names the machine it is done on', () => {
+  for (const lesson of ALL) {
+    assert.ok(Array.isArray(lesson.where), `${lesson.id} needs a where list`);
+    assert.equal(lesson.where.length, lesson.lab.length, `${lesson.id}: one machine per practical step`);
+    for (const code of lesson.where) assert.ok(MACHINES[code], `${lesson.id}: unknown machine ${code}`);
+  }
+  const phaseMachines = id => new Set(ALL.filter(lesson => lesson.phaseId === id).flatMap(lesson => lesson.where));
+  assert.ok(phaseMachines('pa').has('omarchy'));
+  assert.ok(phaseMachines('pw').has('windows-vm'));
+  assert.ok(phaseMachines('p3').has('ubuntu'));
+  assert.ok(lessonSearchText(ALL.find(lesson => lesson.id === 'l65')).includes('omarchy vm'));
 });

@@ -256,6 +256,17 @@ test('every practical step names the machine it is done on', () => {
   const phaseMachines = id => new Set(ALL.filter(lesson => lesson.phaseId === id).flatMap(lesson => lesson.where));
   assert.ok(phaseMachines('pa').has('omarchy'));
   assert.ok(phaseMachines('pw').has('windows-vm'));
-  assert.ok(phaseMachines('p3').has('ubuntu'));
+  assert.ok(phaseMachines('p3').has('ubuntu-or-kali'));
   assert.ok(lessonSearchText(ALL.find(lesson => lesson.id === 'l65')).includes('omarchy vm'));
+});
+
+test('Kali differences checked on 2026-10-28 stay in the lessons', () => {
+  assert.equal(MACHINES.ubuntu, undefined, 'Linux VM lessons accept Ubuntu or Kali');
+  const lab = id => ALL.find(lesson => lesson.id === id).lab.join(' ');
+  assert.match(lab('l21'), /journalctl -b \| grep -i failed/);
+  assert.match(lab('l33'), /default on Kali/);
+  assert.match(lab('l36'), /sudo apt install ufw/);
+  assert.match(lab('l36'), /sudo ufw allow ssh<\/code> before <code>sudo ufw enable/);
+  assert.match(lab('l42'), /Jumbo edition/);
+  for (const id of ['l34', 'l35', 'l42', 'l46']) assert.match(lab(id), /<b>On Kali:<\/b>/, id);
 });

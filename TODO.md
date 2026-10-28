@@ -7,7 +7,7 @@ Handoff notes for the next working session. Read this whole file before starting
 CyberPath is a no-build cybersecurity course for complete beginners: one `index.html` (68 lessons in 11 phases), local labs in `labs/`, tests in `tests/`. See `README.md` for how it works.
 
 - **Where lessons live:** in `index.html` inside `const PHASES=[...]`. Each lesson is one line of valid JSON, so edit lessons by parsing and rewriting that line with a script. Hand-editing those long lines is error-prone.
-- **Lesson fields:** `id`, `t` (title), `m` (minutes), `a` (analogy), `b` (3 paragraphs), `terms`, `lab` (exactly 3 steps), `quiz` (exactly 3 questions of `[question, [3 options], correctIndex]`), `prerequisites`, `where` (exactly 3 machine codes, one per lab step: `host`, `phone`, `paper`, `ubuntu`, `ubuntu-or-kali`, `omarchy`, `windows-vm`, `windows-any`; labels live in `MACHINES`), optional `links`, `deepDive`, `explanations`.
+- **Lesson fields:** `id`, `t` (title), `m` (minutes), `a` (analogy), `b` (3 paragraphs), `terms`, `lab` (exactly 3 steps), `quiz` (exactly 3 questions of `[question, [3 options], correctIndex]`), `prerequisites`, `where` (exactly 3 machine codes, one per lab step: `host`, `phone`, `paper`, `ubuntu-or-kali`, `omarchy`, `windows-vm`, `windows-any`; labels live in `MACHINES`), optional `links`, `deepDive`, `explanations`.
 - **Reading lessons:** lessons without a video set `readingFirst: true` and need `links`, a `deepDive` longer than 500 characters, and one `explanations` entry per quiz question.
 - **Answer positions:** `orderedOptions()` in `index.html` shifts each question's displayed options by `(lesson number + question index) % 3`. Tests require the displayed answer letters to be balanced, and no single letter may pass more than 5 lessons. For new lessons, give each question's correct answer a different displayed letter.
 - **Lesson IDs are permanent:** they are stored in learners' saved progress. Never renumber or reuse an ID. New lessons get new IDs (next free: `l69`).
@@ -123,3 +123,19 @@ New Phase 7 between Defensive Security and Windows (Windows, Pen Testing and Rev
 ## 7. Machine labels (done 2026-10-28)
 
 - [x] Every lesson has a `where` array; the lesson view shows "Where you'll work", each lab step shows its machine, roadmap cards list the machines, and search matches the labels. `tests/curriculum.test.cjs` checks every step has a valid code.
+
+## 8. Kali Linux route (done 2026-10-28)
+
+Checked over SSH on Kali Rolling, ARM64 (Parallels, kernel `7.1.5+kali-arm64`), without sudo:
+
+- [x] All Linux-VM lessons relabelled "Ubuntu or Kali VM"; the `ubuntu` machine code was removed.
+- [x] Labs from a fresh `git clone`: SQL injection 4/4, XSS 4/4, access control 6/6, JavaScript bridge and first-steps pass. `node:sqlite` works (Node 24.21 preinstalled).
+- [x] No `/var/log/auth.log` (rsyslog not installed); the user is in `adm`, so `journalctl -b | grep -i failed` works without sudo (l21, l33).
+- [x] `ufw` not installed but in the repository (l36). `gdb`, `htop`, `ghidra`, `burpsuite`, `openjdk-25-jdk` not installed but in the repository; only the Java runtime is present.
+- [x] Preinstalled: nmap, Wireshark (user already in `wireshark` group), gcc, john (Jumbo), whatweb, curl, git, sqlite3. `nmap localhost` shows only `22/tcp` with SSH on; CUPS inactive.
+- [x] John Jumbo: the l42 `$1$` flow cracks `labpass123` and `--show` matches; it also cracks `$6$`.
+
+Open (record results, don't guess):
+
+- [ ] Installing ufw, Ghidra (`sudo apt install ghidra` gives 12.1.4) or Burp (`burpsuite` package) on Kali ARM64 was not run.
+- [ ] Kali on x86_64 was not checked.

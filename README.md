@@ -74,8 +74,14 @@ One-time setup, on your own computer:
 Then in any browser: **Sign in**, enter the passphrase. You stay signed in on that browser until **Sign out**.
 
 - Changes upload about 1.5 seconds after you make them, and the page pulls the latest copy when it loads or when you come back to the tab.
-- Progress already in a browser when you first sign in is merged with the synced copy, not thrown away. If two browsers change things offline, ticks and completions from both are kept.
-- **Reset** and **Restore backup** replace the synced copy everywhere.
+- Progress already in a browser when you first sign in is merged with the synced copy, not thrown away. If two browsers change things offline, ticks and completions from both are kept, and an untick made while offline can come back in that merge.
+- Two browsers uploading at the same moment can overwrite each other, because the Gist API has no "save only if unchanged". Every upload records the revisions it was built on, and a browser treats its own upload as unconfirmed until it sees it on GitHub. It re-checks a few times after uploading and again on its next visit, so an overwritten browser merges its work back even if it was closed straight away. The other browser picks up the merged copy on its next load, tab switch or edit.
+- A browser that has no unsynced changes always takes the latest synced copy, however many uploads it missed. Merging only happens when both sides really changed.
+- If the synced copy cannot be read (damaged, or from a newer version of the site), nothing is uploaded over it and the sync button shows **Sync error** (hover it for the reason). Older versions stay in the gist's revision history on GitHub. **Restore backup** or **Reset** replaces it on purpose.
+- **Reset** and **Restore backup** replace the synced copy everywhere. Each one starts a new "epoch", so a browser that had offline edits from before it takes the reset copy instead of merging old progress back, and tells you its unsynced changes were replaced.
+- A request to GitHub that gets no answer within 20 seconds is cancelled, and signing out cancels anything in flight, so a slow or stuck connection never blocks later syncs or overwrites edits made after signing out.
+- If this browser cannot save the synced progress (storage full or blocked), sync pauses with **Sync error** instead of moving on. Missing or damaged sync data in browser storage is treated as unknown: local progress counts as unsent and is merged, never overwritten.
+- Two tabs of the course in the same browser keep each other up to date, so one tab never saves an older copy over the other.
 - `sync-config.js` holds the token and gist id encrypted with your passphrase (PBKDF2-SHA256, 600,000 rounds, then AES-256-GCM). It is public, so the passphrase is the only lock: use a long one. If the token leaks, the worst case is read and write access to your gists.
 - After signing in, the decrypted token is kept in that browser's `localStorage`. Every GitHub Pages project under `karlj415.github.io` shares that storage, so only sign in where you trust the scripts.
 - New token or new passphrase: run `node scripts/setup-sync.mjs --gist <gist id>` to reuse the same gist, then push and sign in again.
@@ -121,7 +127,7 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-This checks a 320-pixel viewport, keyboard selection and focus, search, the local-file video fallback, and answer persistence through navigation and reload. It also drives the SQL injection, XSS and access-control lab apps through their real forms. The sync test runs two separate browsers against a fake GitHub Gist API: sign-in, upload, merge, unticking, reset and a revoked token. External requests are blocked in this test; live video playback and screen-reader behavior require manual checks.
+This checks a 320-pixel viewport, keyboard selection and focus, search, the local-file video fallback, and answer persistence through navigation and reload. It also drives the SQL injection, XSS and access-control lab apps through their real forms. The sync test runs two separate browsers against a fake GitHub Gist API: sign-in, upload, merge, unticking, reset, a revoked token, simultaneous uploads, stale reads, an unreadable synced copy, keyboard focus during a sync redraw, upgrading from the first sync format, a browser that missed hundreds of uploads, Reset against offline edits, sign-out and timeouts mid-request, missing or damaged sync data, a full browser storage, and two tabs at once. External requests are blocked in this test; live video playback and screen-reader behavior require manual checks.
 
 Quiz selections and checked feedback now return when reopening a lesson. Changing an answer clears the previous score and feedback until you check again. Existing version 1 backups remain compatible. Restore asks before replacing partial work as well as completed lessons, and rejects unsupported backup versions.
 

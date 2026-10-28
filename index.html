@@ -232,18 +232,51 @@ function save(){
 // ---- Cross-browser sync -------------------------------------------------
 // Progress is mirrored to a secret GitHub Gist. sync-config.js holds the gist
 // id and a gists-only token, encrypted with the sign-in passphrase.
-// Each upload gets a random `rev`. A browser remembers the rev it last synced
-// (`base`) and whether it has unsent changes (`dirty`):
-//   remote rev == base           -> nobody else wrote: upload if dirty
-//   remote rev != base, clean    -> another browser wrote: take its copy
-//   remote rev != base, dirty    -> both wrote: merge (union), then upload
-// `force` (set by Reset and Restore backup) uploads without merging.
+//
+// The Gist API has no "save only if unchanged", so two browsers can upload at
+// once and the later upload silently replaces the earlier one. Every upload
+// therefore carries:
+//   rev      a random id
+//   history  the revs it was built on, newest first (capped)
+//   epoch    changes only on Reset or Restore backup
+// Each browser keeps `meta`: the rev it last synced (`base`), that rev's
+// history and epoch, whether it has unsent changes (`dirty`), and whether its
+// own last upload has not yet been seen on GitHub (`unverified`). On a check:
+//   remote is base, or older than base (a stale read)     -> upload if dirty
+//   epoch changed (Reset or Restore in another browser)   -> take remote
+//   nothing unsent, and remote descends from base or our
+//     base was already seen on GitHub                     -> take remote
+//   otherwise (both changed, or our upload was replaced)  -> merge, upload
+// Merging keeps ticks and the best quiz score from both sides. An upload stays
+// unverified until a later read shows it, which is re-checked a few times and
+// on the next visit, so a replaced upload is merged back. `force` (Reset and
+// Restore backup) uploads without merging and starts a new epoch.
 const SYNC_AUTH_KEY="cyberpath_sync_auth";
 const SYNC_META_KEY="cyberpath_sync_meta";
 const SYNC_FILE="cyberpath-progress.json";
-const sync={auth:null,meta:{base:null,dirty:false,force:false},state:"off",error:"",lastAt:0,seq:0,timer:null,running:null,again:false};
+const SYNC_HISTORY=200,SYNC_UPLOAD_DELAY=1500,SYNC_VERIFY_DELAYS=[4000,15000,60000];
+function blankMeta(){return {base:null,history:[],epoch:"",dirty:false,force:false,unverified:false}}
+// `gen` changes on every sign-in and sign-out, so work started by an earlier
+// session can tell it is stale and stop before touching anything.
+const sync={auth:null,gen:0,meta:blankMeta(),state:"off",error:"",lastAt:0,seq:0,timer:null,verify:null,verifyTry:0,running:null,again:false,abort:null,timeoutMs:20000};
 function readJSON(key){try{return JSON.parse(localStorage.getItem(key))}catch{return null}}
 function writeJSON(key,value){try{value==null?localStorage.removeItem(key):localStorage.setItem(key,JSON.stringify(value))}catch{}}
+function readAuth(){const auth=readJSON(SYNC_AUTH_KEY);return auth&&typeof auth.token==="string"&&typeof auth.gist==="string"?auth:null}
+// Saved metadata is checked field by field. If it is missing or malformed,
+// local progress counts as unsent, so the next sync merges it instead of
+// replacing it, and nothing is ever forced by accident.
+function readMeta(){
+	const raw=readJSON(SYNC_META_KEY);
+	if(!raw||typeof raw!=="object"||!(raw.base===null||typeof raw.base==="string"&&raw.base))return {...blankMeta(),dirty:hasProgress()};
+	const history=Array.isArray(raw.history)?raw.history.filter(rev=>typeof rev==="string"&&rev):[];
+	return {
+		base:raw.base,
+		// Metadata saved before history existed still knows its own base.
+		history:raw.base&&!history.includes(raw.base)?[raw.base,...history]:history,
+		epoch:typeof raw.epoch==="string"?raw.epoch:"",
+		dirty:raw.dirty===true,force:raw.force===true,unverified:raw.unverified===true
+	};
+}
 function fromBase64(text){return Uint8Array.from(atob(text),c=>c.charCodeAt(0))}
 async function unlockSync(passphrase){
 	const config=window.CYBERPATH_SYNC;
@@ -257,20 +290,42 @@ async function unlockSync(passphrase){
 	if(!auth||typeof auth.token!=="string"||typeof auth.gist!=="string")throw new Error("sync-config.js is damaged. Run the setup script again.");
 	return auth;
 }
-async function gist(method,body){
-	const response=await fetch("https://api.github.com/gists/"+encodeURIComponent(sync.auth.gist),{
-		method,cache:"no-store",
-		headers:{Authorization:"Bearer "+sync.auth.token,Accept:"application/vnd.github+json",...(body?{"Content-Type":"application/json"}:{})},
-		body:body&&JSON.stringify(body)
-	});
-	if(response.status===401){const error=new Error("GitHub rejected the sync token (expired or revoked). Make a new one with the setup script, then sign in again.");error.auth=true;throw error}
-	if(!response.ok)throw new Error("GitHub returned "+response.status+(response.status===404?": the gist or its permission is missing.":"."));
-	return response.json();
+async function gist(auth,method,body){
+	const controller=new AbortController();
+	let timedOut=false;
+	const timer=setTimeout(()=>{timedOut=true;controller.abort()},sync.timeoutMs);
+	sync.abort=controller;
+	try{
+		const response=await fetch("https://api.github.com/gists/"+encodeURIComponent(auth.gist),{
+			method,cache:"no-store",signal:controller.signal,
+			headers:{Authorization:"Bearer "+auth.token,Accept:"application/vnd.github+json",...(body?{"Content-Type":"application/json"}:{})},
+			body:body&&JSON.stringify(body)
+		});
+		if(response.status===401){const error=new Error("GitHub rejected the sync token (expired or revoked). Make a new one with the setup script, then sign in again.");error.auth=true;throw error}
+		if(!response.ok)throw new Error("GitHub returned "+response.status+(response.status===404?": the gist or its permission is missing.":"."));
+		return await response.json();
+	}catch(error){
+		if(timedOut)throw new Error("GitHub did not answer in time. Changes are kept here and upload on the next try.");
+		throw error;
+	}finally{clearTimeout(timer)}
 }
+// null: the file does not exist yet. {unreadable:true}: it exists but is
+// damaged or from a newer format, so it must not be overwritten silently.
 function remoteProgress(gistJSON){
 	const file=gistJSON.files&&gistJSON.files[SYNC_FILE];
-	if(!file||!file.content)return null;
-	try{const parsed=JSON.parse(file.content);return {rev:String(parsed.rev),data:normaliseStore(parsed.data)}}catch{return null}
+	if(!file)return null;
+	try{
+		if(file.truncated)throw new Error("too large");
+		const parsed=JSON.parse(file.content);
+		if(parsed.version!==1||typeof parsed.rev!=="string"||!parsed.rev)throw new Error("unknown format");
+		const history=Array.isArray(parsed.history)?parsed.history.filter(rev=>typeof rev==="string"&&rev):[];
+		return {
+			rev:parsed.rev,
+			history:history.includes(parsed.rev)?history:[parsed.rev,...history],
+			epoch:typeof parsed.epoch==="string"?parsed.epoch:"",
+			data:normaliseStore(parsed.data)
+		};
+	}catch{return {unreadable:true}}
 }
 function mergeStores(a,b){
 	const merged=emptyStore();
@@ -303,7 +358,7 @@ function syncChanged(){
 	sync.meta.dirty=true;
 	writeJSON(SYNC_META_KEY,sync.meta);
 	clearTimeout(sync.timer);
-	sync.timer=setTimeout(syncNow,1500);
+	sync.timer=setTimeout(syncNow,SYNC_UPLOAD_DELAY);
 	if(sync.state!=="error")setSync("pending");
 }
 function syncForce(){
@@ -312,43 +367,96 @@ function syncForce(){
 	writeJSON(SYNC_META_KEY,sync.meta);
 }
 let currentLesson=null;
+// Redraws replace the markup, which would drop keyboard focus to <body>. The
+// layout is the same before and after, so focus returns to the control at the
+// same position.
+const FOCUSABLE="a[href],button,input,textarea,select,[tabindex]";
+function keepingFocus(container,redraw){
+	const active=document.activeElement;
+	const index=container.contains(active)?[...container.querySelectorAll(FOCUSABLE)].indexOf(active):-1;
+	redraw();
+	const target=index>=0&&container.querySelectorAll(FOCUSABLE)[index];
+	if(target)target.focus({preventScroll:true});
+}
 function refreshView(){
-	if(currentLesson&&!$("lessonView").classList.contains("hidden")){
-		const y=window.scrollY;
-		openLesson(currentLesson,true);
-		window.scrollTo(0,y);
-	}else renderRoadmap();
+	const y=window.scrollY;
+	if(currentLesson&&!$("lessonView").classList.contains("hidden"))keepingFocus($("lessonContent"),()=>openLesson(currentLesson,true));
+	else keepingFocus($("roadmap"),renderRoadmap);
+	window.scrollTo(0,y);
+}
+function newRev(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
+function lineage(...lists){return [...new Set(lists.flat().filter(Boolean))].slice(0,SYNC_HISTORY)}
+// Replaces local progress with synced data. If this browser cannot store it,
+// stop: moving `base` forward would strand the old progress under a new base.
+function applyStore(next){
+	if(JSON.stringify(next)===JSON.stringify(normaliseStore(store)))return;
+	store=next;
+	const saved=writeLocal();
+	refreshView();
+	if(!saved)throw new Error("This browser could not save the synced progress (storage is full or blocked), so syncing is paused here. Use Save backup to keep a copy.");
+}
+function adopt(meta,remote){
+	meta.base=remote.rev;meta.history=remote.history;meta.epoch=remote.epoch;meta.unverified=false;
+}
+function scheduleVerify(){
+	clearTimeout(sync.verify);
+	if(!sync.auth||!sync.meta.unverified||sync.verifyTry>=SYNC_VERIFY_DELAYS.length)return;
+	sync.verify=setTimeout(syncNow,SYNC_VERIFY_DELAYS[sync.verifyTry++]);
 }
 function syncNow(){
 	clearTimeout(sync.timer);
 	if(!sync.auth)return Promise.resolve();
 	if(sync.running){sync.again=true;return sync.running}
+	const gen=sync.gen,auth=sync.auth,meta=sync.meta,current=()=>sync.gen===gen;
 	sync.running=(async()=>{
 		setSync("busy");
 		try{
 			const seq=sync.seq;
-			const remote=remoteProgress(await gist("GET"));
-			let upload=false;
-			if(!remote||sync.meta.force)upload=true;
-			else if(remote.rev===sync.meta.base)upload=sync.meta.dirty;
-			else if(sync.meta.dirty){
-				store=mergeStores(store,remote.data);
-				writeLocal();refreshView();upload=true;
+			const remote=remoteProgress(await gist(auth,"GET"));
+			if(!current())return;
+			const forced=meta.force;
+			let upload=false,parents=[],epoch=meta.epoch,notice="";
+			if(remote&&remote.unreadable&&!forced)throw new Error("The synced copy in your gist cannot be read, so nothing was uploaded over it. Its revision history on GitHub still has older versions. To replace it with this browser's progress, use Restore backup or Reset.");
+			const readable=remote&&!remote.unreadable?remote:null;
+			if(!readable){upload=true;if(forced)epoch=newRev()}
+			else if(forced){upload=true;parents=readable.history;epoch=newRev()}
+			else if(readable.rev===meta.base||meta.history.includes(readable.rev)){
+				// Our own copy, or an older one served from a cache.
+				if(readable.rev===meta.base)meta.unverified=false;
+				upload=meta.dirty;parents=meta.history;
+			}else if(meta.base!==null&&readable.epoch!==meta.epoch){
+				// Reset or Restore backup in another browser: its copy replaces ours.
+				if(meta.dirty&&JSON.stringify(readable.data)!==JSON.stringify(normaliseStore(store)))notice="Progress was reset or restored in another browser, so this browser's unsynced changes were replaced to match it.";
+				applyStore(readable.data);adopt(meta,readable);
 			}else{
-				if(JSON.stringify(remote.data)!==JSON.stringify(normaliseStore(store))){store=remote.data;writeLocal();refreshView()}
-				sync.meta.base=remote.rev;
+				const descends=meta.base!==null&&readable.history.includes(meta.base);
+				if(descends)meta.unverified=false;
+				if(!meta.dirty&&(descends||meta.base===null||!meta.unverified)){applyStore(readable.data);adopt(meta,readable)}
+				else{
+					// Both sides changed, or our last upload was replaced by a browser that never saw it.
+					applyStore(mergeStores(store,readable.data));
+					upload=true;parents=[...readable.history,...meta.history];epoch=readable.epoch;
+				}
 			}
 			if(upload){
-				const rev=Date.now().toString(36)+Math.random().toString(36).slice(2,8);
-				await gist("PATCH",{files:{[SYNC_FILE]:{content:JSON.stringify({version:1,rev,savedAt:new Date().toISOString(),data:normaliseStore(store)})}}});
-				sync.meta.base=rev;
+				const rev=newRev();
+				// Direct parents go first so the cap can never drop them.
+				const history=lineage([rev,readable&&readable.rev,meta.base],parents);
+				await gist(auth,"PATCH",{files:{[SYNC_FILE]:{content:JSON.stringify({version:1,rev,history,epoch,savedAt:new Date().toISOString(),data:normaliseStore(store)})}}});
+				if(!current())return;
+				meta.base=rev;meta.history=history;meta.epoch=epoch;meta.unverified=true;
+				if(forced)meta.force=false; // this Reset or Restore is done, even if edits followed it
+				sync.verifyTry=0;
 			}
 			// Edits made while this request was in flight still need uploading.
-			if(sync.seq===seq){sync.meta.dirty=false;sync.meta.force=false}
-			writeJSON(SYNC_META_KEY,sync.meta);
+			if(sync.seq===seq)meta.dirty=false;
+			writeJSON(SYNC_META_KEY,meta);
 			sync.lastAt=Date.now();
 			setSync("ok");
+			scheduleVerify();
+			if(notice)alert(notice);
 		}catch(error){
+			if(!current())return;
 			const message=error instanceof TypeError?"Could not reach GitHub. Changes are kept here and upload when you are back online.":error.message;
 			if(error.auth){signOut(true);alert(message)}
 			else setSync("error",message);
@@ -373,10 +481,11 @@ async function signIn(){
 	const message=$("syncSignInMsg");
 	message.textContent="Checking…";
 	try{
-		sync.auth=await unlockSync($("syncPass").value);
-		writeJSON(SYNC_AUTH_KEY,sync.auth);
+		const auth=await unlockSync($("syncPass").value);
+		sync.gen++;sync.auth=auth;
+		writeJSON(SYNC_AUTH_KEY,auth);
 		// Progress already in this browser is merged with the synced copy, not thrown away.
-		sync.meta={base:null,dirty:hasProgress(),force:false};
+		sync.meta={...blankMeta(),dirty:hasProgress()};
 		writeJSON(SYNC_META_KEY,sync.meta);
 		message.textContent="";
 		closeSyncDialog();
@@ -385,20 +494,34 @@ async function signIn(){
 }
 function signOut(silent){
 	if(!silent&&!confirm("Sign out of sync in this browser? Progress stays here but stops syncing."))return;
-	sync.auth=null;sync.meta={base:null,dirty:false,force:false};
+	sync.gen++;
+	if(sync.abort)sync.abort.abort();
+	sync.auth=null;sync.meta=blankMeta();
 	writeJSON(SYNC_AUTH_KEY,null);writeJSON(SYNC_META_KEY,null);
-	clearTimeout(sync.timer);
+	clearTimeout(sync.timer);clearTimeout(sync.verify);
 	setSync("off");
 	if($("syncDialog").open)closeSyncDialog();
+}
+// Another tab of this site wrote to storage: pick up its progress and sign-in
+// state, so this tab never saves an older snapshot over it.
+function onStorage(event){
+	if(event.storageArea!==localStorage)return;
+	if(event.key===KEY||event.key===null){store=loadStore();showStorageNotice();refreshView()}
+	if(event.key===SYNC_AUTH_KEY||event.key===null){
+		const auth=readAuth();
+		if(!auth&&sync.auth)signOut(true);
+		else if(auth&&!sync.auth){sync.gen++;sync.auth=auth;sync.meta=readMeta();syncNow()}
+	}else if(event.key===SYNC_META_KEY&&sync.auth&&!sync.running)sync.meta=readMeta();
 }
 function startSync(){
 	// Pull when you come back to this tab; push before it goes to the background.
 	document.addEventListener("visibilitychange",()=>{if(sync.auth&&(document.visibilityState==="visible"||sync.meta.dirty))syncNow()});
 	window.addEventListener("online",()=>{if(sync.auth)syncNow()});
-	const auth=readJSON(SYNC_AUTH_KEY);
-	if(!auth||typeof auth.token!=="string"||typeof auth.gist!=="string"){setSync("off");return}
-	sync.auth=auth;
-	sync.meta={base:null,dirty:false,force:false,...readJSON(SYNC_META_KEY)};
+	window.addEventListener("storage",onStorage);
+	const auth=readAuth();
+	if(!auth){setSync("off");return}
+	sync.gen++;sync.auth=auth;
+	sync.meta=readMeta();
 	syncNow();
 }
 function isDone(id){return store.done.includes(id)}
@@ -735,20 +858,20 @@ function checkQuiz(id){
 	const completedSteps=store.labs[id]||[];
 	const missing=l.lab.map((_,i)=>completedSteps[i]?null:i+1).filter(Boolean);
 	if(score<2||missing.length){
-		save();
+		const saved=save();
 		const messages=[];
 		if(score<2)messages.push(`${score}/3 — you need at least 2/3`);
 		if(missing.length)messages.push(`complete Try it step${missing.length>1?"s":""} ${missing.join(", ")}`);
-		$("quizMsg").innerHTML=`<span class="badge" style="color:var(--amber)">Almost there: ${messages.join(" and ")}. Your quiz score and practical ticks are saved.</span>`;
+		$("quizMsg").innerHTML=`<span class="badge" style="color:var(--amber)">Almost there: ${messages.join(" and ")}. ${saved?"Your quiz score and practical ticks are saved.":"Your quiz score and practical ticks could not be saved in this browser. Use Save backup now."}</span>`;
 		return;
 	}
 	const newlyCompleted=!isDone(id);
 	if(newlyCompleted)store.done.push(id);
-	save();
+	const saved=save();
 	updateDash();
 	const idx=ALL.findIndex(x=>x.id===id);
 	$("lessonStatus").textContent=`${l.phase} • Lesson ${idx+1} of ${ALL.length} • ~${l.m} minutes • ✓ Completed`;
-	$("quizMsg").innerHTML=`<span class="badge" style="color:var(--green)">🎉 ${score}/3 and all practical steps complete! ${newlyCompleted?"Lesson finished — +20 XP.":"Your completion was already saved."}</span>`;
+	$("quizMsg").innerHTML=`<span class="badge" style="color:var(--green)">🎉 ${score}/3 and all practical steps complete! ${newlyCompleted?"Lesson finished — +20 XP.":"You had already completed this lesson."}${saved?"":" This browser could not save it, so it may be gone after a reload. Use Save backup now."}</span>`;
 }
 function exportProgress(){
 	const payload={version:1,exportedAt:new Date().toISOString(),data:store};
@@ -770,10 +893,10 @@ async function importProgress(event){
 		if(hasProgress()&&!confirm("Replace the progress in this browser with this backup? Save a backup first if you want to keep the current copy."))return;
 		store=imported;
 		syncForce();
-		save();
+		const saved=save();
 		$("searchBox").value="";
 		showHome();
-		alert(`Backup restored: ${store.done.length} of ${ALL.length} lessons complete.${storageIssue?" Progress is only in this tab; save a backup before closing.":""}`);
+		alert(`Backup restored: ${store.done.length} of ${ALL.length} lessons complete.${saved?"":" This browser could not save it, so it lasts only for this tab. Save a backup before closing."}`);
 	}catch(error){
 		alert("That backup could not be restored. Choose an unchanged CyberPath JSON progress file. "+error.message);
 	}finally{input.value=""}
@@ -782,10 +905,10 @@ function resetProgress(){
 	if(!confirm("Reset ALL progress"+(sync.auth?" in every signed-in browser":"")+"? This cannot be undone. Save a backup first if you want to keep it."))return;
 	store=emptyStore();
 	syncForce();
-	save();
+	const saved=save();
 	$("searchBox").value="";
 	showHome();
-	alert("Progress reset. Fresh start!");
+	alert(saved?"Progress reset. Fresh start!":"Progress was reset in this tab, but this browser could not save that, so your old progress may come back after a reload.");
 }
 function initialise(){
 	renderRoadmap();

@@ -1,10 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { connect } from 'node:net';
 import {
   ATTACKER_EMAIL, SESSION_COOKIE, attackerPage, changeEmail, createAttackerServer,
   createLabServer, createStore, findInvoice, sessionFromCookie, signIn,
 } from './app.mjs';
+
+// Sends raw bytes, so the request can be malformed in ways fetch() refuses to send.
+async function rawRequest(port, ...parts) {
+  const socket = connect(port, '127.0.0.1');
+  await once(socket, 'connect');
+  let reply = '';
+  socket.on('data', data => { reply += data; });
+  for (const part of parts.slice(0, -1)) {
+    socket.write(part);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  socket.end(parts.at(-1));
+  await once(socket, 'close');
+  return reply.split('\r\n')[0];
+}
 
 function aliceSession(store) {
   const id = signIn(store, 'alice');
@@ -105,4 +121,64 @@ test('the attacker page targets the shop and cannot include a token', async t =>
   const base = `http://127.0.0.1:${server.address().port}`;
   assert.match(await (await fetch(base)).text(), /Claim prize/);
   assert.equal((await fetch(`${base}/other`)).status, 404);
+});
+
+async function startShop(t) {
+  const store = createStore();
+  const id = signIn(store, 'alice');
+  const server = createLabServer(store);
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const csrf = store.sessions.get(id).csrfToken;
+  return { store, id, csrf, port: server.address().port };
+}
+
+test('malformed request targets get 400 or 404 and neither server crashes', async t => {
+  const { port } = await startShop(t);
+  assert.equal(await rawRequest(port, 'GET //[ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n'), 'HTTP/1.1 400 Bad Request');
+  assert.equal((await fetch(`http://127.0.0.1:${port}/`)).status, 200);
+  const attacker = createAttackerServer(`http://127.0.0.1:${port}`);
+  attacker.listen(0, '127.0.0.1');
+  await once(attacker, 'listening');
+  t.after(() => attacker.close());
+  const attackerPort = attacker.address().port;
+  assert.equal(await rawRequest(attackerPort, 'GET //[ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n'), 'HTTP/1.1 404 Not Found');
+  assert.equal((await fetch(`http://127.0.0.1:${attackerPort}/`)).status, 200);
+});
+
+test('a client hanging up mid-upload does not crash the shop', async t => {
+  const { id, port } = await startShop(t);
+  const socket = connect(port, '127.0.0.1');
+  await once(socket, 'connect');
+  socket.write(`POST /fixed/email HTTP/1.1\r\nHost: 127.0.0.1\r\nCookie: ${SESSION_COOKIE}=${id}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 100\r\n\r\nemail=half`);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  socket.destroy();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal((await fetch(`http://127.0.0.1:${port}/`)).status, 200);
+});
+
+test('a character split across two packets is decoded intact', async t => {
+  const { store, id, csrf, port } = await startShop(t);
+  const body = Buffer.from(`email=${encodeURIComponent('split-é@example.invalid')}&csrf=${csrf}`.replace('%C3%A9', 'é'));
+  const split = body.indexOf(Buffer.from('é')) + 1;
+  const head = `POST /fixed/email HTTP/1.1\r\nHost: 127.0.0.1\r\nCookie: ${SESSION_COOKIE}=${id}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n`;
+  assert.equal(await rawRequest(port, head, body.subarray(0, split), body.subarray(split)), 'HTTP/1.1 200 OK');
+  assert.equal(store.users.alice.email, 'split-é@example.invalid');
+});
+
+test('only an exact form media type is accepted', async t => {
+  const { store, id, csrf, port } = await startShop(t);
+  const before = store.users.alice.email;
+  const post = type => fetch(`http://127.0.0.1:${port}/fixed/email`, {
+    method: 'POST',
+    headers: { 'Content-Type': type, Cookie: `${SESSION_COOKIE}=${id}` },
+    body: new URLSearchParams({ email: 'changed@example.invalid', csrf }).toString(),
+  });
+  for (const type of ['application/x-www-form-urlencodedjunk', 'application/x-www-form-urlencoded-extra', 'text/plain']) {
+    assert.equal((await post(type)).status, 415, type);
+  }
+  assert.equal(store.users.alice.email, before);
+  assert.equal((await post('Application/X-WWW-Form-Urlencoded; charset=UTF-8')).status, 200);
+  assert.equal(store.users.alice.email, 'changed@example.invalid');
 });

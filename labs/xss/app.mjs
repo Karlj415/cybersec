@@ -79,7 +79,14 @@ export function createLabServer() {
       send(405, 'Use GET');
       return;
     }
-    const url = new URL(request.url, 'http://127.0.0.1');
+    let url;
+    try {
+      url = new URL(request.url, 'http://127.0.0.1');
+    } catch {
+      // A malformed request target such as `//[` must not crash the lab.
+      send(400, 'Invalid URL');
+      return;
+    }
     if (url.pathname === '/') {
       send(200, formPage, 'text/html; charset=utf-8');
       return;

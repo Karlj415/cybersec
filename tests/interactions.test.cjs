@@ -75,3 +75,16 @@ test('48 legacy completions do not prematurely finish the expanded curriculum',(
  assert.equal(w.document.getElementById('countText').textContent,'48 / 68 lessons');
  w.continueLesson();assert.equal(state(w).last,'l60');w.close();
 });
+test('when the browser cannot save, messages never claim progress was saved or reset',()=>{
+ const w=app(JSON.stringify({done:['l01'],labs:{},quiz:{},answers:{},last:null}));
+ let message='';w.alert=m=>message=m;
+ w.Storage.prototype.setItem=()=>{throw Error('quota')};
+ w.resetProgress();
+ assert.match(message,/could not save/);assert.doesNotMatch(message,/Fresh start/);
+ w.openLesson('l02');answer(w,'l02');w.checkQuiz('l02');
+ const quiz=w.document.getElementById('quizMsg').textContent;
+ assert.match(quiz,/could not be saved/);assert.doesNotMatch(quiz,/are saved/);
+ w.document.querySelectorAll('.lab-step input').forEach(x=>x.click());w.checkQuiz('l02');
+ assert.match(w.document.getElementById('quizMsg').textContent,/could not save it/);
+ w.close();
+});

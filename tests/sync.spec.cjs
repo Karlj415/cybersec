@@ -21,25 +21,46 @@ test.afterAll(()=>new Promise(resolve=>server.close(resolve)));
 function fakeGitHub(){
  const gist={file:JSON.stringify({version:1,rev:'init',data:{done:[],labs:{},quiz:{},answers:{},last:null}})};
  const seenTokens=new Set();
- gist.status=200;
+ gist.status=200;gist.barrier=0;gist.waiting=[];gist.patches=0;gist.stale=false;
  gist.data=()=>JSON.parse(gist.file).data;
- gist.attach=async context=>{
+ gist.held={};gist.pending={GET:0,PATCH:0};
+ // Hold every GET or PATCH until the returned function is called.
+ gist.hold=method=>{let release;gist.held[method]=new Promise(r=>{release=r});return ()=>{delete gist.held[method];release()}};
+ gist.attach=async(context,net={offline:false})=>{
   await context.route('https://**/*',route=>route.abort());
   await context.route(/\/sync-config\.js$/,route=>route.fulfill({contentType:'text/javascript',body:configJS}));
   await context.route('https://api.github.com/gists/'+GIST,async route=>{
    const request=route.request();
    seenTokens.add(request.headers().authorization);
-   if(gist.status!==200)return route.fulfill({status:gist.status,body:'{}'});
-   if(request.method()==='PATCH')gist.file=JSON.parse(request.postData()).files['cyberpath-progress.json'].content;
-   await route.fulfill({contentType:'application/json',body:JSON.stringify({id:GIST,files:{'cyberpath-progress.json':{content:gist.file}}})});
+   if(net.offline)return route.abort('internetdisconnected');
+   if(gist.held[request.method()]){
+    gist.pending[request.method()]++;
+    await gist.held[request.method()];
+    gist.pending[request.method()]--;
+   }
+   if(gist.status!==200)return route.fulfill({status:gist.status,body:'{}'}).catch(()=>{});
+   if(request.method()==='GET'&&gist.barrier){
+    // Hold reads until `barrier` browsers have read, so they all see the same revision.
+    gist.waiting.push(route);
+    if(gist.waiting.length<gist.barrier)return;
+    gist.barrier=0;
+    const held=gist.waiting.splice(0);
+    for(const r of held)await r.fulfill({contentType:'application/json',body:JSON.stringify({id:GIST,files:{'cyberpath-progress.json':{content:gist.file}}})});
+    return;
+   }
+   let content=gist.file;
+   if(request.method()==='PATCH'){gist.previous=gist.file;gist.file=content=JSON.parse(request.postData()).files['cyberpath-progress.json'].content;gist.patches++}
+   else if(gist.stale){content=gist.previous;gist.stale=false} // like a cached read just after a write
+   // The page may have cancelled the request (sign-out, timeout) while it was held.
+   await route.fulfill({contentType:'application/json',body:JSON.stringify({id:GIST,files:{'cyberpath-progress.json':{content}}})}).catch(()=>{});
   });
  };
  gist.tokens=seenTokens;
  return gist;
 }
 async function vm(browser,gist){
- const context=await browser.newContext();await gist.attach(context);
- const page=await context.newPage();await page.goto(base);
+ const context=await browser.newContext();const net={offline:false};await gist.attach(context,net);
+ const page=await context.newPage();page.net=net;await page.goto(base);
  return page;
 }
 async function signIn(page,passphrase=PASS){
@@ -104,4 +125,253 @@ test('a revoked token signs the browser out and keeps local progress',async({bro
  expect(message).toMatch(/rejected the sync token/);
  expect(await page.evaluate(()=>[store.labs.l01,localStorage.getItem('cyberpath_sync_auth')])).toEqual([[true],null]);
  await page.context().close();
+});
+
+async function signedInPair(browser){
+ const gist=fakeGitHub();
+ const a=await vm(browser,gist),b=await vm(browser,gist);
+ await signIn(a);await synced(a);await signIn(b);await synced(b);
+ return {gist,a,b};
+}
+const labs=page=>page.evaluate(()=>normaliseStore(store).labs);
+
+test('simultaneous uploads: the overwritten browser notices and merges its work back',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ await a.evaluate(()=>toggleLab('l01',0,true));
+ await b.evaluate(()=>toggleLab('l02',0,true));
+ // Both read the same revision, then both upload: the later upload replaces the earlier one.
+ gist.barrier=2;
+ await Promise.all([a.evaluate(()=>syncNow()),b.evaluate(()=>syncNow())]);
+ expect(Object.keys(gist.data().labs)).toHaveLength(1);
+ // The check after each upload spots the overwrite and repairs it without any new edits.
+ const both={l01:[true,false,false],l02:[true,false,false]};
+ await expect.poll(()=>gist.data().labs,{timeout:15000}).toEqual(both);
+ // The browser whose upload survived gets the merged copy on its next pull (load, tab focus or edit).
+ for(const page of [a,b]){await page.evaluate(()=>syncNow());expect(await labs(page)).toEqual(both)}
+ await a.context().close();await b.context().close();
+});
+
+test('a stale read from GitHub does not undo a newer change',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ await a.evaluate(()=>{toggleLab('l01',0,true);return syncNow()});
+ await a.evaluate(()=>{toggleLab('l01',0,false);return syncNow()});
+ const patches=gist.patches;
+ gist.stale=true;
+ await a.evaluate(()=>syncNow());
+ expect(await labs(a)).toEqual({});
+ expect(gist.data().labs).toEqual({});
+ expect(gist.patches).toBe(patches);
+ await a.context().close();await b.context().close();
+});
+
+test('an unreadable synced copy is never overwritten unless you Reset or Restore',async({browser})=>{
+ const gist=fakeGitHub();
+ const page=await vm(browser,gist);
+ await signIn(page);await synced(page);
+ gist.file='{"version":1,"rev":"x","data":{bro';
+ await page.evaluate(()=>{toggleLab('l01',0,true);return syncNow()});
+ await expect(page.locator('#syncBtn')).toHaveText('☁ Sync error');
+ await expect(page.locator('#syncBtn')).toHaveAttribute('title',/cannot be read/);
+ expect(gist.file).toBe('{"version":1,"rev":"x","data":{bro');
+ // A newer format this page does not understand is protected the same way.
+ gist.file=JSON.stringify({version:2,rev:'future',data:{}});
+ await page.evaluate(()=>syncNow());
+ expect(JSON.parse(gist.file).version).toBe(2);
+ page.on('dialog',dialog=>dialog.accept());
+ await page.evaluate(()=>{showHome()});
+ await page.getByRole('button',{name:'Reset'}).click();await synced(page);
+ expect(gist.data()).toEqual({done:[],labs:{},quiz:{},answers:{},last:null});
+ await page.context().close();
+});
+
+test('a sync redraw keeps keyboard focus on the same control',async({browser})=>{
+ const {a,b}=await signedInPair(browser);
+ await a.evaluate(()=>openLesson('l01'));
+ await a.locator('.lab-step input').nth(1).focus();
+ await b.evaluate(()=>{toggleLab('l01',2,true);return syncNow()});
+ await a.evaluate(()=>syncNow());
+ await expect(a.locator('.lab-step input').nth(2)).toBeChecked();
+ await expect(a.locator('.lab-step input').nth(1)).toBeFocused();
+ // Same on the roadmap.
+ await a.evaluate(()=>showHome());
+ await a.locator('.lesson-card').nth(3).focus();
+ await b.evaluate(()=>{toggleLab('l02',0,true);return syncNow()});
+ await a.evaluate(()=>syncNow());
+ await expect(a.locator('.lesson-card').nth(3)).toBeFocused();
+ await a.context().close();await b.context().close();
+});
+
+// ---- Edge cases from the second review ---------------------------------
+const tick=(page,id,step,value=true)=>page.evaluate(([id,step,value])=>{toggleLab(id,step,value);return syncNow()},[id,step,value]);
+const savedMeta=page=>page.evaluate(()=>JSON.parse(localStorage.getItem('cyberpath_sync_meta')));
+const close=(...pages)=>Promise.all(pages.map(page=>page.context().close()));
+
+test('browsers signed in before the history format still pass unticks along',async({browser})=>{
+ const gist=fakeGitHub();
+ // What the first sync release left behind: no history or epoch anywhere.
+ gist.file=JSON.stringify({version:1,rev:'old1',data:{done:[],labs:{l01:[true,false,false]},quiz:{},answers:{},last:null}});
+ const legacy=async()=>{
+  const page=await vm(browser,gist);
+  await page.evaluate(([token,id])=>{
+   localStorage.setItem('cyberpath_v1',JSON.stringify({done:[],labs:{l01:[true,false,false]},quiz:{},answers:{},last:null}));
+   localStorage.setItem('cyberpath_sync_auth',JSON.stringify({token,gist:id}));
+   localStorage.setItem('cyberpath_sync_meta',JSON.stringify({base:'old1',dirty:false,force:false}));
+  },[TOKEN,GIST]);
+  await page.reload();await synced(page);
+  return page;
+ };
+ const a=await legacy(),b=await legacy();
+ await tick(a,'l01',0,false);
+ await b.evaluate(()=>syncNow());
+ expect(await labs(b)).toEqual({});
+ expect(gist.data().labs).toEqual({});
+ await close(a,b);
+});
+
+test('a browser that missed hundreds of uploads takes the latest copy instead of merging old ticks back',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ await tick(a,'l01',0,true);
+ await b.evaluate(()=>syncNow());
+ expect(await labs(b)).toEqual({l01:[true,false,false]});
+ // More uploads than the history keeps, ending with the step unticked.
+ await a.evaluate(async()=>{for(let i=0;i<=205;i++){toggleLab('l01',0,i%2===0);await syncNow()}});
+ expect(gist.data().labs).toEqual({});
+ await b.evaluate(()=>syncNow());
+ expect(await labs(b)).toEqual({});
+ expect(gist.data().labs).toEqual({});
+ await close(a,b);
+});
+
+test('Reset wins over a browser that had offline edits from before it',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ await tick(a,'l01',0,true);await b.evaluate(()=>syncNow());
+ b.net.offline=true;
+ await tick(b,'l02',0,true);
+ await expect(b.locator('#syncBtn')).toHaveText('☁ Sync error');
+ a.on('dialog',dialog=>dialog.accept());
+ await a.getByRole('button',{name:'Reset'}).click();await synced(a);
+ expect(gist.data().labs).toEqual({});
+ let notice='';b.on('dialog',dialog=>{notice=dialog.message();dialog.accept()});
+ b.net.offline=false;
+ await b.evaluate(()=>syncNow());await synced(b);
+ expect(await labs(b)).toEqual({});
+ expect(gist.data().labs).toEqual({});
+ expect(notice).toMatch(/reset or restored in another browser/);
+ // After that, the browser syncs normally again.
+ await tick(b,'l03',0,true);
+ expect(gist.data().labs).toEqual({l03:[true,false,false]});
+ await close(a,b);
+});
+
+test('an edit during a Reset upload does not leave the overwrite switched on',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ await tick(a,'l01',0,true);
+ const release=gist.hold('PATCH');
+ a.on('dialog',dialog=>dialog.accept());
+ await a.evaluate(()=>{resetProgress();syncNow()});
+ await expect.poll(()=>gist.pending.PATCH).toBe(1);
+ await a.evaluate(()=>toggleLab('l04',0,true));
+ release();
+ await expect.poll(()=>gist.data().labs).toEqual({});
+ await expect.poll(()=>a.evaluate(()=>sync.running===null)).toBe(true);
+ const meta=await savedMeta(a);
+ expect(meta.force).toBe(false);
+ // The later edit still uploads, through the normal path.
+ await a.evaluate(()=>syncNow());
+ expect(gist.data().labs).toEqual({l04:[true,false,false]});
+ await close(a,b);
+});
+
+test('signing out while a download is in flight does not overwrite later local edits',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ await tick(b,'l02',0,true);
+ const release=gist.hold('GET');
+ const pending=a.evaluate(()=>{syncNow();return true});
+ await pending;
+ await expect.poll(()=>gist.pending.GET).toBe(1);
+ await a.evaluate(()=>{signOut(true);toggleLab('l05',0,true)});
+ release();
+ await a.waitForTimeout(300);
+ expect(await labs(a)).toEqual({l05:[true,false,false]});
+ expect(await a.evaluate(()=>JSON.parse(localStorage.getItem('cyberpath_v1')).labs)).toEqual({l05:[true]});
+ await expect(a.locator('#syncBtn')).toHaveText('Sign in');
+ await close(a,b);
+});
+
+test('a GitHub request that never answers times out instead of blocking sync',async({browser})=>{
+ const gist=fakeGitHub();
+ const a=await vm(browser,gist);await signIn(a);await synced(a);
+ await a.evaluate(()=>{sync.timeoutMs=300});
+ const release=gist.hold('GET');
+ await a.evaluate(()=>syncNow());
+ await expect(a.locator('#syncBtn')).toHaveText('☁ Sync error');
+ await expect(a.locator('#syncBtn')).toHaveAttribute('title',/did not answer in time/);
+ release();
+ await tick(a,'l01',0,true);await synced(a);
+ expect(gist.data().labs).toEqual({l01:[true,false,false]});
+ await close(a);
+});
+
+test('missing sync metadata on reload merges local progress instead of discarding it',async({browser})=>{
+ const gist=fakeGitHub();
+ const a=await vm(browser,gist);await signIn(a);await synced(a);
+ await a.evaluate(()=>{
+  localStorage.setItem('cyberpath_v1',JSON.stringify({done:[],labs:{l01:[true,false,false]},quiz:{},answers:{},last:null}));
+  localStorage.removeItem('cyberpath_sync_meta');
+ });
+ await a.reload();await synced(a);
+ expect(await labs(a)).toEqual({l01:[true,false,false]});
+ expect(gist.data().labs).toEqual({l01:[true,false,false]});
+ await close(a);
+});
+
+test('damaged sync metadata never forces an overwrite',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ const meta=await savedMeta(a);
+ await a.evaluate(meta=>localStorage.setItem('cyberpath_sync_meta',JSON.stringify({...meta,force:'false',dirty:'no',unverified:1})),meta);
+ await tick(b,'l06',0,true);
+ await a.reload();await synced(a);
+ expect(gist.data().labs).toEqual({l06:[true,false,false]});
+ expect(await labs(a)).toEqual({l06:[true,false,false]});
+ await close(a,b);
+});
+
+test('if this browser cannot store a download, its sync position does not move',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ const before=(await savedMeta(a)).base;
+ await tick(b,'l07',0,true);
+ await a.evaluate(()=>{
+  const setItem=Storage.prototype.setItem;
+  Storage.prototype.setItem=function(key,value){if(key==='cyberpath_v1')throw new Error('quota');return setItem.call(this,key,value)};
+ });
+ await a.evaluate(()=>syncNow());
+ await expect(a.locator('#syncBtn')).toHaveAttribute('title',/could not save the synced progress/);
+ expect((await savedMeta(a)).base).toBe(before);
+ await close(a,b);
+});
+
+test('two tabs of the course do not overwrite each other',async({browser})=>{
+ const context=await browser.newContext();
+ await context.route('https://**/*',route=>route.abort());
+ const one=await context.newPage(),two=await context.newPage();
+ await one.goto(base);await two.goto(base);
+ await one.evaluate(()=>toggleLab('l01',0,true));
+ await expect.poll(()=>labs(two)).toEqual({l01:[true,false,false]});
+ await two.evaluate(()=>toggleLab('l02',0,true));
+ await one.reload();
+ expect(await labs(one)).toEqual({l01:[true,false,false],l02:[true,false,false]});
+ await context.close();
+});
+
+test('an upload replaced right before the browser closed is merged back on its next visit',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ await a.evaluate(()=>toggleLab('l08',0,true));
+ await b.evaluate(()=>toggleLab('l09',0,true));
+ gist.barrier=2;
+ await Promise.all([a.evaluate(()=>syncNow()),b.evaluate(()=>syncNow())]);
+ // Both close before the follow-up check runs, then come back.
+ await Promise.all([a.reload(),b.reload()]);
+ const both={l08:[true,false,false],l09:[true,false,false]};
+ await expect.poll(()=>gist.data().labs,{timeout:15000}).toEqual(both);
+ await close(a,b);
 });

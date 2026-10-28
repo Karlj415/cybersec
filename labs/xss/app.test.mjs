@@ -1,7 +1,23 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { connect } from 'node:net';
 import { createLabServer, escapeHtml, greeting } from './app.mjs';
+
+// Sends raw bytes, so the request can be malformed in ways fetch() refuses to send.
+async function rawRequest(port, ...parts) {
+  const socket = connect(port, '127.0.0.1');
+  await once(socket, 'connect');
+  let reply = '';
+  socket.on('data', data => { reply += data; });
+  for (const part of parts.slice(0, -1)) {
+    socket.write(part);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  socket.end(parts.at(-1));
+  await once(socket, 'close');
+  return reply.split('\r\n')[0];
+}
 
 const payload = `<img src=x onerror="document.getElementById('status').textContent='Script ran. It can read: '+document.cookie">`;
 
@@ -49,4 +65,14 @@ test('HTTP serves encoded HTML in fixed mode, keeps headers and validates reques
   assert.equal((await fetch(`${base}/greet?mode=unknown`)).status, 400);
   assert.equal((await fetch(`${base}/missing`)).status, 404);
   assert.equal((await fetch(base, { method: 'POST' })).status, 405);
+});
+
+test('a malformed request target gets 400 and the server keeps running', async t => {
+  const server = createLabServer();
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const { port } = server.address();
+  assert.equal(await rawRequest(port, 'GET //[ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n'), 'HTTP/1.1 400 Bad Request');
+  assert.equal((await fetch(`http://127.0.0.1:${port}/`)).status, 200);
 });

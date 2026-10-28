@@ -128,19 +128,28 @@ function messagePage(title, message) {
   return page(title, `<p><a href="/">Back to the shop</a></p><h1>${escapeHtml(title)}</h1><p id="message">${escapeHtml(message)}</p>`);
 }
 
+// Only an exact form media type counts (parameters such as `; charset=utf-8`
+// are fine); `application/x-www-form-urlencodedjunk` is not a form.
+function isForm(type = '') {
+  return type.split(';')[0].trim().toLowerCase() === 'application/x-www-form-urlencoded';
+}
+
 async function readForm(request) {
-  const type = request.headers['content-type'] ?? '';
-  if (!type.startsWith('application/x-www-form-urlencoded')) return null;
-  let body = '';
+  if (!isForm(request.headers['content-type'])) return null;
+  // Collect raw bytes and decode once: decoding each chunk separately would
+  // garble a character whose bytes arrive in two chunks.
+  const chunks = [];
+  let size = 0;
   for await (const chunk of request) {
-    body += chunk;
-    if (body.length > 4096) return null;
+    size += chunk.length;
+    if (size > 4096) return null;
+    chunks.push(chunk);
   }
-  return new URLSearchParams(body);
+  return new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
 }
 
 export function createLabServer(store = createStore()) {
-  return createServer(async (request, response) => {
+  const handle = async (request, response) => {
     function send(status, body, extra = {}) {
       response.writeHead(status, {
         'Content-Type': 'text/html; charset=utf-8',
@@ -213,6 +222,19 @@ export function createLabServer(store = createStore()) {
     }
 
     send(request.method === 'GET' ? 404 : 405, messagePage('Not found', 'Use the links and forms on the shop page.'));
+  };
+  return createServer((request, response) => {
+    // One bad request (a client hanging up mid-upload, a malformed URL) must
+    // not take the whole lab down.
+    handle(request, response).catch(() => {
+      if (response.headersSent || request.destroyed) {
+        response.destroy();
+        return;
+      }
+      const body = 'Bad request';
+      response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': Buffer.byteLength(body) });
+      response.end(body);
+    });
   });
 }
 
@@ -230,8 +252,13 @@ ${forms}`);
 
 export function createAttackerServer(target) {
   return createServer((request, response) => {
-    const body = request.method === 'GET' && new URL(request.url, 'http://127.0.0.1').pathname === '/'
-      ? attackerPage(target) : 'Not found';
+    let pathname = null;
+    try {
+      pathname = new URL(request.url, 'http://127.0.0.1').pathname;
+    } catch {
+      // Malformed request target: answer "Not found" instead of crashing.
+    }
+    const body = request.method === 'GET' && pathname === '/' ? attackerPage(target) : 'Not found';
     response.writeHead(body === 'Not found' ? 404 : 200, {
       'Content-Type': body === 'Not found' ? 'text/plain; charset=utf-8' : 'text/html; charset=utf-8',
       'Content-Length': Buffer.byteLength(body),

@@ -23,7 +23,7 @@ When opened directly from disk, lessons show a video thumbnail and direct YouTub
 - Aim for up to **1 hour a day**, usually one or two lessons. The cards number lessons, not days.
 - Follow the phases in order because later practical steps use earlier skills.
 - Most lessons take 20–30 minutes. VM setup, downloads, and external labs can take an hour or more; taking longer is expected.
-- Each lesson follows an analogy, selected video or guided reading, worked explanation, three practical steps, and three quiz questions.
+- Each lesson follows an analogy, selected video or guided reading, worked explanation, three practical steps, and three quiz questions. Checking the quiz explains why each answer is right.
 - 57 of the 68 lessons have a selected video with title, channel, duration, and verification metadata. The eleven without one (the three JavaScript lessons, the Windows VM setup, identity/UAC and NTFS lessons, and the five Arch Linux lessons) use guided reading with official sources, because no video matched them closely; video searches are optional. Use the YouTube fallback if an embed cannot play.
 - To complete a lesson, tick all three practical steps and score at least **2/3** in the quiz. Retries have no penalty.
 - **Continue** returns to your unfinished lesson when possible, otherwise it finds the next incomplete lesson.
@@ -90,10 +90,14 @@ Quiz selections and checked feedback now return when reopening a lesson. Changin
 
 ## Remaining verification
 
-- Complete the new native Windows exercises in a Windows guest, including the ACL restoration and live event queries.
-- Complete all practical steps in a fresh Ubuntu Desktop VM, including the Mac/UTM setup route. The course content has structural checks; this is not a completed VM walkthrough.
-- Verify live YouTube playback over HTTP and screen-reader announcements in a real browser.
-- Add authored explanations for the remaining original quiz answers; the SQL lesson and new prerequisite/Windows lessons include them.
+Done: every Windows lesson command (Windows 11 ARM64 in Parallels, normal and admin windows, 2026-10-27), every Linux terminal step in an Ubuntu 26.04 ARM64 VM (2026-10-27), the web labs in headless Firefox 154, and every Arch/Omarchy lesson command in Try Omarchy (2026-10-28). Every quiz question now has an authored explanation, and a test enforces it.
+
+Still open:
+
+- Intel/AMD hosts: the Windows lessons in VirtualBox, UTM or an Enterprise edition, and the Omarchy ISO route in VirtualBox or VMware.
+- The Mac/UTM route for Ubuntu (the walkthrough used Parallels), and a fresh Ubuntu 26.04 install rather than one upgraded from 24.04.
+- Omarchy: booting an older snapshot from the boot menu, and a VM that kept the old kernel after an update and reboot (see [the Arch lab guide](labs/arch/README.md)).
+- Safari, live YouTube playback over HTTP, and screen-reader announcements in a real browser.
 
 ## Code-first security lab: SQL injection lesson
 

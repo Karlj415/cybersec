@@ -66,6 +66,9 @@ test('every lesson has a selected video or an explicit guided-reading route', ()
     assert.ok(lesson.deepDive.length > 500, lesson.id);
     assert.equal(lesson.explanations.length, lesson.quiz.length);
   }
+  for (const lesson of ALL) {
+    assert.equal((lesson.explanations || []).length, lesson.quiz.length, `${lesson.id} needs one explanation per quiz question`);
+  }
 });
 
 test('displayed answer positions are balanced and stable', () => {

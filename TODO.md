@@ -114,3 +114,8 @@ New Phase 7 between Defensive Security and Windows (Windows, Pen Testing and Rev
 - [ ] Videos: none chosen; all five are reading lessons. Only add one if it matches Omarchy 4 (the menu moved to Super + Space and SSH became opt-in in v4, so older Omarchy videos teach the wrong keys).
 - [x] Cleanup in the user's VM (2026-10-28): throwaway key deleted from the Mac and removed from the VM's `authorized_keys`; the user's own `id_ed25519` is now the only authorized key. Note: Try Omarchy's Add SSH forward did not persist (the VM's `settings.json` has no port-forward entry), so the 2222 forward was added live via QEMU's monitor and lasts until the VM shuts down.
 
+## 6. Quiz explanations (done 2026-10-28)
+
+- [x] Authored explanations for the 47 lessons that had none (l01-l48 except l32): 141 entries, each saying why the right answer is right and, where it helps, why the tempting wrong one is not. `tests/curriculum.test.cjs` now requires one explanation per quiz question for every lesson.
+- [x] README "Remaining verification" rewritten: it listed the Windows and Ubuntu walkthroughs as not done.
+

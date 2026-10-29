@@ -15,6 +15,12 @@ test('part 2 prints the output the lesson promises', () => {
   assert.equal(run('./second-steps.mjs'), [
     'Hi Ana', '8', '22 3', "[ 'port 22', 'port 80', 'port 443' ]",
     'Checking port 22', 'Checking port 80', 'Checking port 443',
-    'Ana false', 'Paris', 'not given', '9 a-b', '',
+    'Ana false', 'true false', '',
+  ].join('\n'));
+});
+
+test('part 3 prints the output the lesson promises', () => {
+  assert.equal(run('./third-steps.mjs'), [
+    'true false', '{"name":"Ana","admin":false,"ports":[22,443]}', 'Ana 2', 'Caught a SyntaxError', 'Server said { ok: true }', '',
   ].join('\n'));
 });

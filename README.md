@@ -1,6 +1,6 @@
 # CyberPath — From Zero to Cybersecurity
 
-A no-build learning website for complete beginners. It includes 68 lessons in 11 phases, practical exercises, quizzes, and browser-based progress tracking.
+A no-build learning website for complete beginners. It includes 69 lessons in 11 phases, practical exercises, quizzes, and browser-based progress tracking.
 
 ## Open the course
 
@@ -41,7 +41,7 @@ Browser storage for the website, `file://` and `http://127.0.0.1:8765` is separa
 - Follow the phases in order because later practical steps use earlier skills.
 - Most lessons take 20–30 minutes. VM setup, downloads, and external labs can take an hour or more; taking longer is expected.
 - Each lesson follows an analogy, selected video or guided reading, worked explanation, three practical steps, and three quiz questions. Checking the quiz explains why each answer is right.
-- 57 of the 68 lessons have a selected video with title, channel, duration, and verification metadata. The eleven without one (the three JavaScript lessons, the Windows VM setup, identity/UAC and NTFS lessons, and the five Arch Linux lessons) use guided reading with official sources, because no video matched them closely; video searches are optional. Use the YouTube fallback if an embed cannot play.
+- 57 of the 69 lessons have a selected video with title, channel, duration, and verification metadata. The twelve without one (the four JavaScript lessons, the Windows VM setup, identity/UAC and NTFS lessons, and the five Arch Linux lessons) use guided reading with official sources, because no video matched them closely; video searches are optional. Use the YouTube fallback if an embed cannot play.
 - Every lesson shows **Where you'll work** under its title, and every practical step carries a label for the machine it runs on: Your Mac or Windows PC, Your phone, Notebook (no computer), Ubuntu or Kali VM, Omarchy VM, Windows VM, or Windows PC or Windows VM. The roadmap cards show the same list, and search matches it (for example, search "omarchy vm").
 - To complete a lesson, tick all three practical steps and score at least **2/3** in the quiz. Retries have no penalty.
 - **Continue** returns to your unfinished lesson when possible, otherwise it finds the next incomplete lesson.
@@ -184,7 +184,7 @@ On Apple Silicon Macs the route is the Try Omarchy app; on Intel/AMD it is the O
 
 ## Prerequisite order and Windows security
 
-Three JavaScript lessons follow the web/API basics and come before the SQL injection lab. Two assume no programming at all and teach values, variables, if/else, functions, arrays, objects and loops with runnable files in `labs/javascript/` (they also cover installing Node.js and copying the course into the VM). The third reads the exact code used in the SQL lab. Each lesson displays links to prerequisites that appear earlier in the roadmap. These are readiness guidance rather than navigation locks.
+Four JavaScript lessons follow the web/API basics and come before the SQL injection lab. Three assume no programming at all, with runnable files in `labs/javascript/`: part 1 covers values, variables and if/else (plus installing Node 24 LTS or 22.13+ and copying the course into the VM), part 2 functions, arrays, objects, loops and comparisons, and part 3 reading errors and stack traces, JSON, modules, `node:test` tests and just enough `await` to read the lab tests. The fourth reads the exact code used in the SQL lab, including the URL parsing, `??` and spread it relies on. Learners check their own practice files with `node labs/javascript/check.mjs part1|part2|part3 <file>`, which prints PASS or FAIL with a hint for each check; reference answers are in `labs/javascript/solutions/`. Each lesson displays links to prerequisites that appear earlier in the roadmap. These are readiness guidance rather than navigation locks.
 
 The ten-lesson Windows phase follows the Arch Linux phase and precedes penetration testing: VM baseline → PowerShell → tokens/UAC → NTFS permissions → services/tasks/Registry → networking/firewall → event logs → hardening → enterprise identity → investigation capstone. Use a Windows guest in VirtualBox, UTM or Parallels for native exercises. The Windows guide explains architecture considerations, live versus synthetic evidence, expected outputs and the longer progression toward enterprise proficiency.
 

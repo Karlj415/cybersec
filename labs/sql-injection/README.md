@@ -119,9 +119,51 @@ Before editing, run in another terminal from this directory:
 node --test app.test.mjs
 ```
 
-The tests demonstrate the original failure, the fixed behavior, legitimate apostrophes, and real HTTP requests. After repairing the intentionally vulnerable branch, **three tests should fail**: the injection test, the apostrophe test, and the HTTP test (its loop also expects `vulnerable` mode to leak the draft). Update the injection and HTTP tests to require no leaked draft from either branch; change the apostrophe test to require a successful match in both branches. This turns the reproduction into a regression test for your patch. Do not merely delete the failing assertion.
+Expected: `# pass 5` and `# fail 0`. The tests demonstrate the original failure, the fixed behavior, legitimate apostrophes, and real HTTP requests. After repairing the intentionally vulnerable branch, **Exactly three tests should fail:** `injection leaks a draft only when input changes SQL source`, `parameter binding preserves a legitimate apostrophe` and `HTTP preserves defaults, input encoding, JSON isolation and request validation` (its loop also expects `vulnerable` mode to leak the draft). Update the injection and HTTP tests to require no leaked draft from either branch; change the apostrophe test to require a successful match in both branches. Rerun until all 5 pass. This turns the reproduction into a regression test for your patch. Do not merely delete the failing assertion.
 
 Also test an empty name and a nonexistent name. Both should return no rows without an error in the fixed implementation.
+
+### Compare your edited tests
+
+Try the edit yourself first. Then compare with the blocks below: yours can look different and still be right, as long as each test now requires the safe result from **both** modes and still contains the attack. A block that starts with `// Replaces:` is a whole new test that takes the place of the test named there. A block that starts with `// In the test` changes one line inside that test.
+
+```javascript
+// Replaces: injection leaks a draft only when input changes SQL source
+test('injection leaks nothing in either mode', () => {
+  withDatabase(db => {
+    const attack = "' OR 1=1 -- ";
+    for (const mode of ['vulnerable', 'fixed']) {
+      const result = search(db, attack, mode);
+      assert.deepEqual(result.rows, []);
+      assert.deepEqual(result.parameters, [attack]);
+      assert.ok(!result.query.includes(attack));
+      assert.equal(result.error, null);
+    }
+  });
+});
+```
+
+```javascript
+// Replaces: parameter binding preserves a legitimate apostrophe
+test('both modes match a legitimate apostrophe', () => {
+  withDatabase(db => {
+    for (const mode of ['vulnerable', 'fixed']) {
+      const result = search(db, "O'Reilly Guide", mode);
+      assert.deepEqual(result.rows, ["O'Reilly Guide"]);
+      assert.equal(result.error, null);
+    }
+  });
+});
+```
+
+```javascript
+// In the test 'HTTP preserves defaults, input encoding, JSON isolation and request validation', change
+    assert.equal(result.rows.includes('Unreleased prototype'), mode === 'vulnerable');
+// to
+    assert.equal(result.rows.includes('Unreleased prototype'), false);
+```
+
+The HTTP test is `async`: `await fetch(...)` waits for each reply before the next line runs. Part 3 of the JavaScript lessons covers `await`, `assert` and `node --test`.
 
 ## What this fix does and does not guarantee
 

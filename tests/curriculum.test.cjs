@@ -25,8 +25,8 @@ const plain = value => JSON.parse(JSON.stringify(value));
 
 test('the curriculum has complete, uniquely identified lessons', () => {
   assert.equal(PHASES.length, 11);
-  assert.equal(ALL.length, 68);
-  assert.equal(new Set(ALL.map(lesson => lesson.id)).size, 68);
+  assert.equal(ALL.length, 69);
+  assert.equal(new Set(ALL.map(lesson => lesson.id)).size, 69);
   for (const lesson of ALL) {
     assert.match(lesson.id, /^l\d{2}$/);
     assert.ok(lesson.t.length > 5);
@@ -204,6 +204,24 @@ test('the JavaScript prerequisite displays the supplied runnable example', () =>
   assert.match(sql.deepDive, /node app\.mjs/);
   assert.match(sql.deepDive, /\.all\(\.\.\.parameters\)/);
   assert.ok(sql.prerequisites.includes(bridge.id));
+});
+
+test('the JavaScript lessons display their runnable lab files exactly, in order', () => {
+  const decode = text => text.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
+  const ids = ALL.map(lesson => lesson.id);
+  assert.deepEqual(plain(ids.slice(ids.indexOf('l60'), ids.indexOf('l60') + 4)), ['l60', 'l61', 'l69', 'l49']);
+  assert.ok(ALL.find(lesson => lesson.id === 'l49').prerequisites.includes('l69'));
+  for (const [id, files] of [['l61', ['second-steps.mjs']], ['l69', ['third-steps.mjs', 'ports.test.mjs']]]) {
+    const blocks = [...ALL.find(lesson => lesson.id === id).deepDive.matchAll(/<pre><code>([\s\S]*?)<\/code><\/pre>/g)].map(match => decode(match[1]));
+    files.forEach((file, i) => assert.equal(blocks[i], fs.readFileSync(path.join(root, 'labs/javascript', file), 'utf8').trimEnd(), `${id} shows ${file}`));
+  }
+  // Every lesson that asks for a practice file says how to check it.
+  for (const [id, part] of [['l60', 'part1'], ['l61', 'part2'], ['l69', 'part3']]) {
+    assert.match(ALL.find(lesson => lesson.id === id).lab.join(' '), new RegExp(`check\\.mjs ${part}`), id);
+  }
+  // The Node version advice is the same everywhere.
+  assert.match(ALL.find(lesson => lesson.id === 'l60').deepDive, /Node 24 LTS, or Node 22\.13 or newer/);
+  assert.doesNotMatch(ALL.find(lesson => lesson.id === 'l60').lab[0], /v22 or higher/);
 });
 
 test('web-security lessons follow SQL injection and show the real lab code', () => {

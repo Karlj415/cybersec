@@ -146,7 +146,7 @@ Before editing, run this from the `labs/access-control` folder in a second termi
 node --test app.test.mjs
 ```
 
-Expected: `# pass 6` and `# fail 0`.
+Expected: `# pass 10` and `# fail 0`.
 
 Now patch both vulnerable branches in `app.mjs`:
 
@@ -156,7 +156,35 @@ Now patch both vulnerable branches in `app.mjs`:
 
 Restart the app (Ctrl+C, then `node app.mjs`; Alice will need to sign in again), and repeat steps 2 and 3 using only the vulnerable links and buttons. Both attacks should now fail, and the shop's own vulnerable form should still save.
 
-Rerun the tests. **Exactly two tests should fail**: the IDOR test and the CSRF test. They described the old bugs. Change their vulnerable-mode assertions to require the safe result (`null` for Bob's invoice, status 403 for the forged form), and rerun until all 6 pass. Keep the attacks in the tests as regression tests.
+Rerun the tests. **Exactly two tests should fail:** `IDOR: another customer's invoice leaks only in vulnerable mode` and `CSRF: a form without the token changes the email only in vulnerable mode`. They described the old bugs. Change their vulnerable-mode assertions to require the safe result (`null` for Bob's invoice, status 403 for the forged form), and rerun until all 10 pass. Keep the attacks in the tests as regression tests.
+
+### Compare your edited tests
+
+Try the edit yourself first. Then compare with the blocks below: yours can look different and still be right, as long as each test now requires the safe result from **both** modes and still contains the attack. A block that starts with `// Replaces:` is a whole new test that takes the place of the test named there. A block that starts with `// In the test` changes one line inside that test.
+
+```javascript
+// Replaces: IDOR: another customer's invoice leaks only in vulnerable mode
+test("IDOR: another customer's invoice is refused in both modes", () => {
+  const store = createStore();
+  const alice = aliceSession(store);
+  for (const mode of ['vulnerable', 'fixed']) {
+    assert.equal(findInvoice(store, alice, '1042', mode), null);
+  }
+});
+```
+
+```javascript
+// Replaces: CSRF: a form without the token changes the email only in vulnerable mode
+test('CSRF: a form without the token is refused in both modes', () => {
+  const store = createStore();
+  const alice = aliceSession(store);
+  const forged = new URLSearchParams({ email: ATTACKER_EMAIL });
+  for (const mode of ['vulnerable', 'fixed']) {
+    assert.equal(changeEmail(store, alice, forged, mode).status, 403);
+  }
+  assert.equal(store.users.alice.email, 'alice@example.invalid');
+});
+```
 
 ## What these fixes do and do not guarantee
 

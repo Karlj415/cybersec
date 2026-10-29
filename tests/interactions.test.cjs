@@ -72,7 +72,7 @@ test('48 legacy completions do not prematurely finish the expanded curriculum',(
  const done=Array.from({length:48},(_,i)=>'l'+String(i+1).padStart(2,'0'));
  const w=app(JSON.stringify({done,labs:{},quiz:{},last:'l48'}));
  assert.notEqual(w.document.getElementById('badgeText').textContent,'Path Complete');
- assert.equal(w.document.getElementById('countText').textContent,'48 / 68 lessons');
+ assert.equal(w.document.getElementById('countText').textContent,'48 / 69 lessons');
  w.continueLesson();assert.equal(state(w).last,'l60');w.close();
 });
 test('when the browser cannot save, messages never claim progress was saved or reset',()=>{

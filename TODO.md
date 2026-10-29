@@ -4,13 +4,13 @@ Handoff notes for the next working session. Read this whole file before starting
 
 ## Context
 
-CyberPath is a no-build cybersecurity course for complete beginners: one `index.html` (68 lessons in 11 phases), local labs in `labs/`, tests in `tests/`. See `README.md` for how it works.
+CyberPath is a no-build cybersecurity course for complete beginners: one `index.html` (69 lessons in 11 phases), local labs in `labs/`, tests in `tests/`. See `README.md` for how it works.
 
 - **Where lessons live:** in `index.html` inside `const PHASES=[...]`. Each lesson is one line of valid JSON, so edit lessons by parsing and rewriting that line with a script. Hand-editing those long lines is error-prone.
 - **Lesson fields:** `id`, `t` (title), `m` (minutes), `a` (analogy), `b` (3 paragraphs), `terms`, `lab` (exactly 3 steps), `quiz` (exactly 3 questions of `[question, [3 options], correctIndex]`), `prerequisites`, `where` (exactly 3 machine codes, one per lab step: `host`, `phone`, `paper`, `ubuntu-or-kali`, `omarchy`, `windows-vm`, `windows-any`; labels live in `MACHINES`), optional `links`, `deepDive`, `explanations`.
 - **Reading lessons:** lessons without a video set `readingFirst: true` and need `links`, a `deepDive` longer than 500 characters, and one `explanations` entry per quiz question.
 - **Answer positions:** `orderedOptions()` in `index.html` shifts each question's displayed options by `(lesson number + question index) % 3`. Tests require the displayed answer letters to be balanced, and no single letter may pass more than 5 lessons. For new lessons, give each question's correct answer a different displayed letter.
-- **Lesson IDs are permanent:** they are stored in learners' saved progress. Never renumber or reuse an ID. New lessons get new IDs (next free: `l69`).
+- **Lesson IDs are permanent:** they are stored in learners' saved progress. Never renumber or reuse an ID. New lessons get new IDs (next free: `l70`).
 - **Audience:** complete beginners. Match the tone of the early phases: an everyday analogy, plain words, and a short definition for every new term. For every command, explain what it does and what the learner should expect to see.
 - **Labs:** required labs stay on localhost or inside the learner's own VM. They must not need any external account.
 

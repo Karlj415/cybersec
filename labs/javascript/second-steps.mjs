@@ -18,9 +18,4 @@ for (const port of ports) {
 const user = { name: 'Ana', admin: false };
 console.log(user.name, user.admin);
 
-const params = new URLSearchParams('city=Paris');
-console.log(params.get('city'));
-console.log(params.get('country') ?? 'not given');
-
-const words = ['a', 'b'];
-console.log(Math.max(...[3, 9, 4]), words.join('-'));
+console.log(ports.length > 2, user.admin === true);

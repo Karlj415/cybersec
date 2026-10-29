@@ -115,9 +115,25 @@ Before editing, run this from the `labs/xss` folder in a second terminal:
 node --test app.test.mjs
 ```
 
-Expected: `# pass 4` and `# fail 0`. The tests show the old bug, the fixed behavior, the encoding function itself, and real HTTP requests.
+Expected: `# pass 5` and `# fail 0`. The tests show the old bug, the fixed behavior, the encoding function itself, and real HTTP requests.
 
-After your patch, run them again. **Exactly one test should fail:** `markup in input becomes live HTML only in vulnerable mode`. It described the old bug. Change its vulnerable-mode assertions so they require encoded output from both modes (for example, check that `greeting(payload, 'vulnerable')` does not include `<img`). Rerun until all 4 pass. Keep the payload in the test: it is now a regression test that fails if anyone removes the encoding again.
+After your patch, run them again. **Exactly one test should fail:** `markup in input becomes live HTML only in vulnerable mode`. It described the old bug. Change its vulnerable-mode assertions so they require encoded output from both modes (for example, check that `greeting(payload, 'vulnerable')` does not include `<img`). Rerun until all 5 pass. Keep the payload in the test: it is now a regression test that fails if anyone removes the encoding again.
+
+### Compare your edited tests
+
+Try the edit yourself first. Then compare with the blocks below: yours can look different and still be right, as long as each test now requires the safe result from **both** modes and still contains the attack. A block that starts with `// Replaces:` is a whole new test that takes the place of the test named there. A block that starts with `// In the test` changes one line inside that test.
+
+```javascript
+// Replaces: markup in input becomes live HTML only in vulnerable mode
+test('markup in input is encoded in both modes', () => {
+  for (const mode of ['vulnerable', 'fixed']) {
+    const html = greeting(payload, mode);
+    assert.ok(!html.includes('<img'));
+    assert.ok(html.includes('&lt;img src=x onerror=&quot;'));
+    assert.ok(!greeting('Use the <b> tag', mode).includes('<b>'));
+  }
+});
+```
 
 ## 5. See what HttpOnly does and does not do
 

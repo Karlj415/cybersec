@@ -28,6 +28,8 @@ a{color:var(--green)}button{font:inherit;cursor:pointer}
 h1{font-size:42px;line-height:1.05;margin:10px 0 12px;letter-spacing:-.02em}
 @media(max-width:600px){h1{font-size:32px}}
 h2{font-size:26px;margin:0 0 10px}h3{margin:0 0 8px}
+.section-h{font-size:1.17em;margin:22px 0 8px}.pct{font-size:26px;font-weight:700;margin:0 0 10px}
+.skip-link{position:absolute;left:12px;top:-60px;z-index:100;background:var(--green);color:#062312;padding:10px 14px;border-radius:8px;font-weight:700}.skip-link:focus{top:12px}
 .muted{color:var(--muted)} .small{font-size:13px}
 .progress-track{height:14px;background:#0a0f0c;border:1px solid var(--line);border-radius:999px;overflow:hidden}
 .progress-fill{height:100%;background:var(--green);width:0;transition:width .4s}
@@ -90,13 +92,14 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid var(-
 .topbar{position:static}
 .topbar-in{padding:10px 16px;gap:10px}
 .nav{width:100%;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
-.nav button{padding:8px 6px;font-size:13px;white-space:nowrap}
+.nav button{padding:6px 4px;font-size:13px;white-space:normal;line-height:1.2;min-height:40px;overflow-wrap:anywhere}
 .nav button:nth-child(4){font-size:12px}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
 </style>
 </head>
 <body>
+<a class="skip-link" href="#main" onclick="event.preventDefault();$('main').focus()">Skip to content</a>
 <header class="topbar"><div class="topbar-in">
 <div class="logo"><span class="logo-badge">◈</span> CYBER<span style="color:var(--green)">PATH</span></div>
 <nav class="nav" aria-label="Course controls">
@@ -124,7 +127,7 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid var(-
 </dialog>
 <input id="importFile" type="file" accept="application/json,.json" hidden onchange="importProgress(event)">
 
-<main class="wrap">
+<main class="wrap" id="main" tabindex="-1">
 <div id="storageNotice" class="warn small hidden" role="alert" style="margin-bottom:18px"></div>
 <!-- HOME -->
 <section id="homeView">
@@ -139,7 +142,7 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid var(-
 </div>
 <div class="card">
 <div class="kicker">Your progress</div>
-<div style="display:flex;justify-content:space-between;align-items:baseline"><h2 id="pctText">0%</h2><span class="muted" id="countText">0 / 59 lessons</span></div>
+<div style="display:flex;justify-content:space-between;align-items:baseline"><div id="pctText" class="pct">0%</div><span class="muted" id="countText"></span></div>
 <div class="progress-track" id="mainProgressTrack" role="progressbar" aria-label="Course progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="progress-fill" id="mainProgress"></div></div>
 <div class="stats">
 <div class="stat"><b id="xpText">0</b><span class="muted small">XP ⭐</span></div>
@@ -152,7 +155,7 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid var(-
 </div>
 
 <div class="card" id="how" style="margin-bottom:18px">
-<h3>How every lesson works</h3>
+<h2 class="section-h" style="margin-top:0">How every lesson works</h2>
 <p class="muted" style="margin:6px 0 0">1. <b style="color:var(--text)">Analogy</b> — the idea in everyday words &nbsp; 2. <b style="color:var(--text)">Watch</b> — a selected video or guided video search &nbsp; 3. <b style="color:var(--text)">Read</b> — a simple explanation &nbsp; 4. <b style="color:var(--text)">Try it</b> — complete all three hands-on steps &nbsp; 5. <b style="color:var(--text)">Quiz</b> — get at least 2 of 3 right. Most lessons take 20–30 minutes; setup and external labs can take longer.</p>
 </div>
 
@@ -803,7 +806,7 @@ function updateDash(){
 	$("xpText").textContent=xp();
 	$("levelText").textContent=Math.floor(n/6)+1;
 	$("badgeText").textContent=rank();
-	const next=ALL.find(l=>!isDone(l.id));
+	const next=nextLesson();
 	$("nextText").innerHTML=next?("Next: <b style='color:var(--text)'>"+next.t+"</b> • "+next.phase):"🎉 You finished the whole path! Revisit lessons, then take the final lesson's 90-day plan.";
 }
 function renderRoadmap(){
@@ -820,18 +823,34 @@ function renderRoadmap(){
 	$("searchStatus").textContent=q?visible+" matching lesson"+(visible===1?"":"s"):"";
 	updateDash();
 }
-function showHome(){
+// Lessons have their own address (#l60), so Back, Forward and bookmarks work.
+// location.hash is used rather than pushState, which file:// pages may refuse.
+let homeScroll=0;
+function lessonFromHash(){const id=location.hash.slice(1);return ALL.some(l=>l.id===id)?id:null}
+function route(){
+	const id=lessonFromHash(),inLesson=!$("lessonView").classList.contains("hidden");
+	if(id){if(!(inLesson&&currentLesson===id))openLesson(id)}
+	else if(!location.hash||location.hash==="#"){if(inLesson)showHome(true)}
+}
+// `back` returns to where the roadmap was scrolled, as Back does on other sites.
+function showHome(back){
 	$("lessonView").classList.add("hidden");
 	$("homeView").classList.remove("hidden");
 	$("navHome").classList.add("active");
 	$("navHome").setAttribute("aria-current","page");
 	renderRoadmap();
-	scrollToTop();
+	if(back===true)window.scrollTo(0,homeScroll);else scrollToTop();
 	$("homeTitle").focus({preventScroll:true});
+	if(lessonFromHash())location.hash="";
+}
+// The lesson you were last on if it is unfinished, otherwise the first
+// unfinished one. The dashboard's "Next" line and Continue both use this.
+function nextLesson(){
+	const last=ALL.find(l=>l.id===store.last);
+	return (last&&!isDone(last.id)?last:null)||ALL.find(l=>!isDone(l.id))||null;
 }
 function continueLesson(){
-	const last=ALL.find(l=>l.id===store.last);
-	const next=(last&&!isDone(last.id)?last:null)||ALL.find(l=>!isDone(l.id))||last||ALL[ALL.length-1];
+	const next=nextLesson()||ALL.find(l=>l.id===store.last)||ALL[ALL.length-1];
 	openLesson(next.id);
 }
 function renderPrerequisites(l){
@@ -843,7 +862,10 @@ function openLesson(id,redraw){
 	const l=ALL.find(x=>x.id===id);
 	if(!l)return;
 	currentLesson=id;
-	if(!redraw){store.last=id;save()}
+	if(!redraw){
+		store.last=id;save();
+		if(!$("homeView").classList.contains("hidden"))homeScroll=window.scrollY;
+	}
 	$("homeView").classList.add("hidden");
 	$("lessonView").classList.remove("hidden");
 	$("navHome").classList.remove("active");
@@ -862,18 +884,18 @@ function openLesson(id,redraw){
 		<div class="machines"><b>Where you'll work:</b> ${lessonMachines(l).map(machineBadge).join(" ")}</div>
 		<div class="analogy"><b>Think of it like this:</b> ${l.a}</div>
 		${renderPrerequisites(l)}
-		<h3 style="margin-top:22px">📺 1 — Watch</h3>${video}
+		<h2 class="section-h">📺 1 — Watch</h2>${video}
 		<p><a target="_blank" rel="noopener noreferrer" href="${searchLink}">🔍 Search this topic on YouTube instead</a></p>
-		<h3 style="margin-top:22px">📖 2 — Read</h3>${l.b.map(p=>`<p>${p}</p>`).join("")}
+		<h2 class="section-h">📖 2 — Read</h2>${l.b.map(p=>`<p>${p}</p>`).join("")}
 		<h3>Words to know</h3><div class="terms">${l.terms.map(t=>`<div class="term"><b>${t[0]}</b><br><span class="muted small">${t[1]}</span></div>`).join("")}</div>
 		${resources}
 		${l.deepDive||""}
-		<h3 style="margin-top:22px">✋ 3 — Try it (complete all three steps)</h3>
+		<h2 class="section-h">✋ 3 — Try it (complete all three steps)</h2>
 		${l.lab.map((s,i)=>`<label class="lab-step"><input type="checkbox" ${labs[i]?"checked":""} onchange="toggleLab('${id}',${i},this.checked)"><span>${machineBadge(l.where[i])} ${s}</span></label>`).join("")}
-		<h3 style="margin-top:22px">🧠 4 — Quiz</h3>
+		<h2 class="section-h">🧠 4 — Quiz</h2>
 		<p class="small muted">Get at least 2 of 3 right and complete all three practical steps to finish this lesson. Retries have no penalty.</p>
-		<div id="quizBox">${l.quiz.map((qq,qi)=>`<fieldset class="quiz-q" id="question${qi}"><legend>Q${qi+1}. ${qq[0]}</legend>${orderedOptions(id,qi,qq[1]).map(o=>`<label><input type="radio" name="q${qi}" value="${o.value}" ${(store.answers[id]||[])[qi]===o.value?"checked":""} onchange="saveAnswer('${id}',${qi},this.value)"> ${o.text}</label>`).join("")}<div class="quiz-feedback" id="quizFeedback${qi}"></div></fieldset>`).join("")}</div>
-		<p id="quizMsg" role="status" aria-live="polite"></p>
+		<div id="quizBox">${l.quiz.map((qq,qi)=>`<fieldset class="quiz-q" id="question${qi}" aria-describedby="quizFeedback${qi}"><legend>Q${qi+1}. ${qq[0]}</legend>${orderedOptions(id,qi,qq[1]).map(o=>`<label><input type="radio" name="q${qi}" value="${o.value}" ${(store.answers[id]||[])[qi]===o.value?"checked":""} onchange="saveAnswer('${id}',${qi},this.value)"> ${o.text}</label>`).join("")}<div class="quiz-feedback" id="quizFeedback${qi}"></div></fieldset>`).join("")}</div>
+		<p id="quizMsg" tabindex="-1"></p>
 		<p style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn primary" onclick="checkQuiz('${id}')">Check quiz & complete lesson ✓</button><button class="btn" onclick="clearQuiz('${id}')">↺ Clear quiz answers</button></p>
 		<p style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px">${prev?`<button class="btn" onclick="openLesson('${prev.id}')">← ${prev.t}</button>`:"<span></span>"}${next?`<button class="btn" onclick="openLesson('${next.id}')">${next.t} →</button>`:""}</p>
 	</div>`;
@@ -881,6 +903,7 @@ function openLesson(id,redraw){
 	if(redraw)return;
 	scrollToTop();
 	$("lessonTitle").focus({preventScroll:true});
+	if(location.hash!=="#"+id)location.hash=id;
 }
 function toggleLab(id,i,value){
 	const l=ALL.find(x=>x.id===id);
@@ -934,6 +957,11 @@ function checkQuiz(id){
 	});
 	const score=showQuizFeedback(id);
 	store.quiz[id]=score;
+	// Focus moves to this summary, so a screen reader hears the result and
+	// which questions to look at; each question's own feedback is linked to it.
+	const wrong=l.quiz.map((qq,qi)=>store.answers[id][qi]===qq[2]?null:"Q"+(qi+1)).filter(Boolean);
+	const review=wrong.length?` Review ${wrong.length>1?wrong.slice(0,-1).join(", ")+" and "+wrong.at(-1):wrong[0]}: the correct answer is shown under ${wrong.length>1?"each one":"it"}.`:"";
+	const quizMsg=$("quizMsg");
 	const completedSteps=store.labs[id]||[];
 	const missing=l.lab.map((_,i)=>completedSteps[i]?null:i+1).filter(Boolean);
 	if(score<2||missing.length){
@@ -941,7 +969,8 @@ function checkQuiz(id){
 		const messages=[];
 		if(score<2)messages.push(`${score}/3 — you need at least 2/3`);
 		if(missing.length)messages.push(`complete Try it step${missing.length>1?"s":""} ${missing.join(", ")}`);
-		$("quizMsg").innerHTML=`<span class="badge" style="color:var(--amber)">Almost there: ${messages.join(" and ")}. ${saved?"Your quiz score and practical ticks are saved.":"Your quiz score and practical ticks could not be saved in this browser. Use Save backup now."}</span>`;
+		quizMsg.innerHTML=`<span class="badge" style="color:var(--amber)">Almost there: ${messages.join(" and ")}.${review} ${saved?"Your quiz score and practical ticks are saved.":"Your quiz score and practical ticks could not be saved in this browser. Use Save backup now."}</span>`;
+		quizMsg.focus();
 		return;
 	}
 	const newlyCompleted=!isDone(id);
@@ -950,7 +979,8 @@ function checkQuiz(id){
 	updateDash();
 	const idx=ALL.findIndex(x=>x.id===id);
 	$("lessonStatus").textContent=`${l.phase} • Lesson ${idx+1} of ${ALL.length} • ~${l.m} minutes • ✓ Completed`;
-	$("quizMsg").innerHTML=`<span class="badge" style="color:var(--green)">🎉 ${score}/3 and all practical steps complete! ${newlyCompleted?"Lesson finished — +20 XP.":"You had already completed this lesson."}${saved?"":" This browser could not save it, so it may be gone after a reload. Use Save backup now."}</span>`;
+	quizMsg.innerHTML=`<span class="badge" style="color:var(--green)">🎉 ${score}/3 and all practical steps complete! ${review.trim()?review.trim()+" ":""}${newlyCompleted?"Lesson finished — +20 XP.":"You had already completed this lesson."}${saved?"":" This browser could not save it, so it may be gone after a reload. Use Save backup now."}</span>`;
+	quizMsg.focus();
 }
 function exportProgress(){
 	const payload={version:1,exportedAt:new Date().toISOString(),data:store};
@@ -992,6 +1022,8 @@ function resetProgress(){
 function initialise(){
 	renderRoadmap();
 	showStorageNotice();
+	window.addEventListener("hashchange",route);
+	if(lessonFromHash())openLesson(lessonFromHash());
 	startSync();
 }
 initialise();

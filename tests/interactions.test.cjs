@@ -88,3 +88,33 @@ test('when the browser cannot save, messages never claim progress was saved or r
  assert.match(w.document.getElementById('quizMsg').textContent,/could not save it/);
  w.close();
 });
+
+test('the dashboard has no stale lesson count and Next names the lesson Continue opens',()=>{
+ assert.match(html,/id="countText"><\/span>/);
+ const w=app();
+ assert.equal(w.document.getElementById('countText').textContent,`0 / ${w.eval('ALL.length')} lessons`);
+ w.openLesson('l05');w.showHome();
+ const title=w.eval("ALL.find(l=>l.id==='l05').t");
+ assert.match(w.document.getElementById('nextText').textContent,new RegExp('Next: '+title.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+ w.continueLesson();assert.equal(w.eval('currentLesson'),'l05');
+ w.close();
+});
+
+test('checking a quiz moves focus to the result, which names the questions to review',()=>{
+ const w=app();w.openLesson('l01');
+ const quiz=w.eval("ALL.find(l=>l.id==='l01').quiz");
+ quiz.forEach((q,i)=>{const value=i===0?q[2]:(q[2]+1)%3;w.document.querySelector(`input[name=q${i}][value="${value}"]`).click()});
+ w.checkQuiz('l01');
+ const message=w.document.getElementById('quizMsg');
+ assert.equal(w.document.activeElement,message);
+ assert.match(message.textContent,/Review Q2 and Q3/);
+ for(let i=0;i<3;i++)assert.equal(w.document.getElementById('question'+i).getAttribute('aria-describedby'),'quizFeedback'+i);
+ w.close();
+});
+
+test('each lesson has its own address and the roadmap clears it',()=>{
+ const w=app();
+ w.openLesson('l05');assert.equal(w.location.hash,'#l05');
+ w.showHome();assert.equal(w.location.hash,'');
+ w.close();
+});

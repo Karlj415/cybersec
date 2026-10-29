@@ -33,3 +33,24 @@ test('local server serves course/lab content with HEAD support and confines file
  await symlink(path.join(root,'.secret'),path.join(root,'hidden-link.txt'));
  assert.equal((await fetch(base+'/hidden-link.txt')).status,403);
 });
+
+test('local server refuses requests addressed to any other host (DNS rebinding)',async t=>{
+ const {createStaticServer}=await import('../scripts/serve.mjs');
+ const http=require('node:http');
+ const directory=await mkdtemp(path.join(tmpdir(),'cyberpath-host-'));
+ t.after(()=>rm(directory,{recursive:true,force:true}));
+ await writeFile(path.join(directory,'index.html'),'<h1>local</h1>');
+ const server=createStaticServer(directory);server.listen(0,'127.0.0.1');await once(server,'listening');
+ t.after(()=>new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve())));
+ const port=server.address().port;
+ // fetch() always sends the real Host, so build requests by hand.
+ const status=host=>new Promise((resolve,reject)=>{
+  const headers=host===undefined?{}:{host};
+  const request=http.request({host:'127.0.0.1',port,path:'/',headers,setHost:false},response=>{response.resume();resolve(response.statusCode)});
+  request.on('error',reject);request.end();
+ });
+ for(const host of [`127.0.0.1:${port}`,`localhost:${port}`,`[::1]:${port}`,`LOCALHOST:${port}`])assert.equal(await status(host),200,host);
+ for(const host of [`evil.example:${port}`,'evil.example',`127.0.0.1:${port+1}`,'127.0.0.1',`127.0.0.1.evil.example:${port}`,`localhost:${port}@evil.example`])assert.equal(await status(host),421,host);
+ // Node itself answers 400 when Host is missing; either way nothing is served.
+ for(const host of [undefined,''])assert.ok([400,421].includes(await status(host)),String(host));
+});

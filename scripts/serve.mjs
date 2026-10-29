@@ -17,6 +17,20 @@ function excluded(path) {
   return path.split(/[\\/]/).some(segment => segment.startsWith('.') || segment === 'node_modules');
 }
 
+// Only answer requests addressed to this machine by a loopback name and our
+// own port. A web page cannot then point its own domain at 127.0.0.1 (DNS
+// rebinding) and read these files through the visitor's browser.
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
+export function allowedHost(host, port) {
+  if (typeof host !== 'string' || !host) return false;
+  try {
+    const url = new URL(`http://${host}`);
+    return url.host === host.toLowerCase() && LOOPBACK.has(url.hostname) && Number(url.port || 80) === port;
+  } catch {
+    return false;
+  }
+}
+
 function within(root, target) {
   const path = relative(root, target);
   return path !== '..' && !path.startsWith('..' + sep) && !isAbsolute(path);
@@ -24,7 +38,7 @@ function within(root, target) {
 
 export function createStaticServer(directory) {
   const root = realpathSync(directory);
-  return createServer(async (request, response) => {
+  const server = createServer(async (request, response) => {
     function reply(status, body, type = 'text/plain; charset=utf-8') {
       response.writeHead(status, {
         'Content-Type': type,
@@ -33,6 +47,10 @@ export function createStaticServer(directory) {
         'Cache-Control': 'no-store',
       });
       response.end(request.method === 'HEAD' ? undefined : body);
+    }
+    if (!allowedHost(request.headers.host, server.address().port)) {
+      reply(421, 'This server only answers requests for 127.0.0.1, localhost or [::1] on its own port');
+      return;
     }
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       reply(405, 'Use GET or HEAD');
@@ -64,6 +82,7 @@ export function createStaticServer(directory) {
       else reply(500, 'Unable to read file');
     }
   });
+  return server;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

@@ -110,7 +110,7 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid var(-
 <dialog id="syncDialog" aria-labelledby="syncTitle">
 <form id="syncSignIn" onsubmit="event.preventDefault();signIn()">
 <h2 id="syncTitle">Sign in to sync</h2>
-<p class="small muted" style="margin:0">Your progress follows you to every browser and VM where you sign in.</p>
+<p class="small muted" style="margin:0">Your progress follows you to every browser and VM where you sign in. Each tab signs in on its own and stays signed in until you close it.</p>
 <input id="syncPass" type="password" autocomplete="current-password" aria-label="Sync passphrase" placeholder="Passphrase">
 <p id="syncSignInMsg" class="small" role="alert" style="margin:0;color:var(--red)"></p>
 <div class="row"><button type="button" class="btn" onclick="closeSyncDialog()">Cancel</button><button class="btn primary">Sign in</button></div>
@@ -118,6 +118,7 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid var(-
 <div id="syncSignedIn" class="hidden">
 <h2>Progress sync</h2>
 <p id="syncStatusText" class="small" role="status" style="margin:0"></p>
+<p class="small muted" style="margin:0">Signed in for this tab only. Closing it signs you out; other tabs ask for the passphrase.</p>
 <div class="row"><button type="button" class="btn" onclick="signOut()">Sign out</button><button type="button" class="btn" onclick="syncNow()">Sync now</button><button type="button" class="btn primary" onclick="closeSyncDialog()">Close</button></div>
 </div>
 </dialog>
@@ -254,14 +255,34 @@ function save(){
 const SYNC_AUTH_KEY="cyberpath_sync_auth";
 const SYNC_META_KEY="cyberpath_sync_meta";
 const SYNC_FILE="cyberpath-progress.json";
-const SYNC_HISTORY=200,SYNC_UPLOAD_DELAY=1500,SYNC_VERIFY_DELAYS=[4000,15000,60000];
-function blankMeta(){return {base:null,history:[],epoch:"",dirty:false,force:false,unverified:false}}
+const SYNC_HISTORY=200,SYNC_SNAPS=4,SYNC_UPLOAD_DELAY=1500,SYNC_VERIFY_DELAYS=[4000,15000,60000];
+// `snaps` holds this browser's last few synced copies, newest first. A merge
+// compares both sides against the newest one the other side also descends
+// from, so a change made on only one side (an untick, a cleared quiz) wins.
+function blankMeta(){return {gist:"",base:null,history:[],epoch:"",dirty:false,force:false,unverified:false,snaps:[]}}
 // `gen` changes on every sign-in and sign-out, so work started by an earlier
 // session can tell it is stale and stop before touching anything.
 const sync={auth:null,gen:0,meta:blankMeta(),state:"off",error:"",lastAt:0,seq:0,timer:null,verify:null,verifyTry:0,running:null,again:false,abort:null,timeoutMs:20000};
 function readJSON(key){try{return JSON.parse(localStorage.getItem(key))}catch{return null}}
 function writeJSON(key,value){try{value==null?localStorage.removeItem(key):localStorage.setItem(key,JSON.stringify(value))}catch{}}
-function readAuth(){const auth=readJSON(SYNC_AUTH_KEY);return auth&&typeof auth.token==="string"&&typeof auth.gist==="string"?auth:null}
+// The decrypted token lives in this tab's sessionStorage: it survives a
+// reload but is gone when the tab closes, and other pages on this origin
+// cannot read it from disk later. Earlier versions kept it in localStorage;
+// that copy is moved here and deleted.
+function readAuth(){
+	let raw=null;
+	try{
+		raw=sessionStorage.getItem(SYNC_AUTH_KEY);
+		const old=localStorage.getItem(SYNC_AUTH_KEY);
+		if(old!==null){localStorage.removeItem(SYNC_AUTH_KEY);if(raw===null){raw=old;sessionStorage.setItem(SYNC_AUTH_KEY,old)}}
+	}catch{}
+	let auth=null;try{auth=JSON.parse(raw)}catch{}
+	return auth&&typeof auth.token==="string"&&typeof auth.gist==="string"?auth:null;
+}
+function writeAuth(auth){
+	try{auth?sessionStorage.setItem(SYNC_AUTH_KEY,JSON.stringify(auth)):sessionStorage.removeItem(SYNC_AUTH_KEY)}catch{}
+	try{localStorage.removeItem(SYNC_AUTH_KEY)}catch{}
+}
 // Saved metadata is checked field by field. If it is missing or malformed,
 // local progress counts as unsent, so the next sync merges it instead of
 // replacing it, and nothing is ever forced by accident.
@@ -270,11 +291,15 @@ function readMeta(){
 	if(!raw||typeof raw!=="object"||!(raw.base===null||typeof raw.base==="string"&&raw.base))return {...blankMeta(),dirty:hasProgress()};
 	const history=Array.isArray(raw.history)?raw.history.filter(rev=>typeof rev==="string"&&rev):[];
 	return {
+		gist:typeof raw.gist==="string"?raw.gist:"",
 		base:raw.base,
 		// Metadata saved before history existed still knows its own base.
 		history:raw.base&&!history.includes(raw.base)?[raw.base,...history]:history,
 		epoch:typeof raw.epoch==="string"?raw.epoch:"",
-		dirty:raw.dirty===true,force:raw.force===true,unverified:raw.unverified===true
+		dirty:raw.dirty===true,force:raw.force===true,unverified:raw.unverified===true,
+		snaps:Array.isArray(raw.snaps)?raw.snaps.flatMap(snap=>{
+			try{return snap&&typeof snap.rev==="string"&&snap.rev?[{rev:snap.rev,data:normaliseStore(snap.data)}]:[]}catch{return []}
+		}).slice(0,SYNC_SNAPS):[]
 	};
 }
 function fromBase64(text){return Uint8Array.from(atob(text),c=>c.charCodeAt(0))}
@@ -341,6 +366,27 @@ function mergeStores(a,b){
 	merged.last=a.last||b.last;
 	return normaliseStore(merged);
 }
+// Three-way merge: for each value, a side that changed it since `base` wins.
+// A lesson's quiz score and answers move together, so a score never ends up
+// next to the other side's answers. If both sides retook a quiz, the higher
+// score is kept (this browser's on a tie).
+function mergeThreeWay(base,local,remote){
+	const same=(x,y)=>JSON.stringify(x)===JSON.stringify(y);
+	const pick=(b,l,r)=>same(l,b)?r:l;
+	const merged=emptyStore();
+	for(const l of ALL){
+		const id=l.id;
+		if(pick(...[base,local,remote].map(s=>s.done.includes(id))))merged.done.push(id);
+		const [sb,sl,sr]=[base,local,remote].map(s=>l.lab.map((_,i)=>(s.labs[id]||[])[i]===true));
+		merged.labs[id]=l.lab.map((_,i)=>pick(sb[i],sl[i],sr[i]));
+		const [qb,ql,qr]=[base,local,remote].map(s=>({quiz:s.quiz[id]??null,answers:s.answers[id]??null}));
+		const quiz=same(ql,qb)?qr:same(qr,qb)?ql:(qr.quiz??-1)>(ql.quiz??-1)?qr:ql;
+		if(quiz.quiz!==null)merged.quiz[id]=quiz.quiz;
+		if(quiz.answers!==null)merged.answers[id]=quiz.answers;
+	}
+	merged.last=pick(base.last,local.last,remote.last);
+	return normaliseStore(merged);
+}
 function setSync(state,error=""){
 	sync.state=state;sync.error=error;
 	const button=$("syncBtn");
@@ -395,8 +441,18 @@ function applyStore(next){
 	refreshView();
 	if(!saved)throw new Error("This browser could not save the synced progress (storage is full or blocked), so syncing is paused here. Use Save backup to keep a copy.");
 }
+function remember(meta,rev,data){
+	// A copy, because the live progress object keeps changing after this.
+	meta.snaps=[{rev,data:JSON.parse(JSON.stringify(data))},...meta.snaps.filter(snap=>snap.rev!==rev)].slice(0,SYNC_SNAPS);
+}
+// The newest copy this browser had that the remote copy descends from.
+function sharedAncestor(meta,remote){
+	for(const rev of remote.history){const snap=meta.snaps.find(s=>s.rev===rev);if(snap)return snap.data}
+	return null;
+}
 function adopt(meta,remote){
 	meta.base=remote.rev;meta.history=remote.history;meta.epoch=remote.epoch;meta.unverified=false;
+	remember(meta,remote.rev,remote.data);
 }
 function scheduleVerify(){
 	clearTimeout(sync.verify);
@@ -434,17 +490,20 @@ function syncNow(){
 				if(!meta.dirty&&(descends||meta.base===null||!meta.unverified)){applyStore(readable.data);adopt(meta,readable)}
 				else{
 					// Both sides changed, or our last upload was replaced by a browser that never saw it.
-					applyStore(mergeStores(store,readable.data));
+					// Without a shared copy to compare against (older metadata), keep everything from both.
+					const ancestor=sharedAncestor(meta,readable);
+					applyStore(ancestor?mergeThreeWay(ancestor,normaliseStore(store),readable.data):mergeStores(store,readable.data));
 					upload=true;parents=[...readable.history,...meta.history];epoch=readable.epoch;
 				}
 			}
 			if(upload){
 				const rev=newRev();
 				// Direct parents go first so the cap can never drop them.
-				const history=lineage([rev,readable&&readable.rev,meta.base],parents);
-				await gist(auth,"PATCH",{files:{[SYNC_FILE]:{content:JSON.stringify({version:1,rev,history,epoch,savedAt:new Date().toISOString(),data:normaliseStore(store)})}}});
+				const history=lineage([rev,readable&&readable.rev,meta.base],parents),data=normaliseStore(store);
+				await gist(auth,"PATCH",{files:{[SYNC_FILE]:{content:JSON.stringify({version:1,rev,history,epoch,savedAt:new Date().toISOString(),data})}}});
 				if(!current())return;
 				meta.base=rev;meta.history=history;meta.epoch=epoch;meta.unverified=true;
+				remember(meta,rev,data);
 				if(forced)meta.force=false; // this Reset or Restore is done, even if edits followed it
 				sync.verifyTry=0;
 			}
@@ -483,21 +542,25 @@ async function signIn(){
 	try{
 		const auth=await unlockSync($("syncPass").value);
 		sync.gen++;sync.auth=auth;
-		writeJSON(SYNC_AUTH_KEY,auth);
-		// Progress already in this browser is merged with the synced copy, not thrown away.
-		sync.meta={...blankMeta(),dirty:hasProgress()};
+		writeAuth(auth);
+		sync.meta=metaFor(auth);
 		writeJSON(SYNC_META_KEY,sync.meta);
 		message.textContent="";
 		closeSyncDialog();
 		await syncNow();
 	}catch(error){message.textContent=error.message}
 }
-function signOut(silent){
+// Signing out (or a revoked token) signs out every tab of this browser. Only
+// the word "signout" crosses between tabs, never the token.
+const syncChannel=typeof BroadcastChannel==="function"?new BroadcastChannel("cyberpath-sync"):null;
+if(syncChannel)syncChannel.onmessage=event=>{if(event.data&&event.data.type==="signout"&&sync.auth)signOut(true,true)};
+function signOut(silent,fromOtherTab){
 	if(!silent&&!confirm("Sign out of sync in this browser? Progress stays here but stops syncing."))return;
 	sync.gen++;
 	if(sync.abort)sync.abort.abort();
 	sync.auth=null;sync.meta=blankMeta();
-	writeJSON(SYNC_AUTH_KEY,null);writeJSON(SYNC_META_KEY,null);
+	writeAuth(null);writeJSON(SYNC_META_KEY,null);
+	if(syncChannel&&!fromOtherTab)syncChannel.postMessage({type:"signout"});
 	clearTimeout(sync.timer);clearTimeout(sync.verify);
 	setSync("off");
 	if($("syncDialog").open)closeSyncDialog();
@@ -506,12 +569,16 @@ function signOut(silent){
 // state, so this tab never saves an older snapshot over it.
 function onStorage(event){
 	if(event.storageArea!==localStorage)return;
-	if(event.key===KEY||event.key===null){store=loadStore();showStorageNotice();refreshView()}
-	if(event.key===SYNC_AUTH_KEY||event.key===null){
-		const auth=readAuth();
-		if(!auth&&sync.auth)signOut(true);
-		else if(auth&&!sync.auth){sync.gen++;sync.auth=auth;sync.meta=readMeta();syncNow()}
-	}else if(event.key===SYNC_META_KEY&&sync.auth&&!sync.running)sync.meta=readMeta();
+	if(event.key===KEY||event.key===null){
+		store=loadStore();showStorageNotice();refreshView();
+		// A tab that is not signed in cannot upload its edits, so this one does.
+		if(sync.auth){
+			if(!sync.running)sync.meta=readMeta();
+			const base=sync.meta.snaps.find(snap=>snap.rev===sync.meta.base);
+			if(!sync.meta.dirty&&!(base&&JSON.stringify(base.data)===JSON.stringify(normaliseStore(store))))syncChanged();
+		}
+	}
+	if(event.key===SYNC_META_KEY&&sync.auth&&!sync.running)sync.meta=readMeta();
 }
 function startSync(){
 	// Pull when you come back to this tab; push before it goes to the background.
@@ -521,8 +588,20 @@ function startSync(){
 	const auth=readAuth();
 	if(!auth){setSync("off");return}
 	sync.gen++;sync.auth=auth;
-	sync.meta=readMeta();
+	sync.meta=metaFor(auth);
+	writeJSON(SYNC_META_KEY,sync.meta);
 	syncNow();
+}
+// Sync metadata is shared by every tab and outlives sign-in, so a tab that
+// signs in carries on from it. Progress changed while no tab was signed in
+// counts as unsent, so it is merged instead of being replaced.
+function metaFor(auth){
+	const meta=readMeta();
+	if(meta.gist&&meta.gist!==auth.gist)return {...blankMeta(),gist:auth.gist,dirty:hasProgress()};
+	meta.gist=auth.gist;
+	const base=meta.snaps.find(snap=>snap.rev===meta.base);
+	if(base&&JSON.stringify(base.data)!==JSON.stringify(normaliseStore(store)))meta.dirty=true;
+	return meta;
 }
 function isDone(id){return store.done.includes(id)}
 function xp(){return store.done.length*20}

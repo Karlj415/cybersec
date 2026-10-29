@@ -375,3 +375,161 @@ test('an upload replaced right before the browser closed is merged back on its n
  await expect.poll(()=>gist.data().labs,{timeout:15000}).toEqual(both);
  await close(a,b);
 });
+
+// ---- Three-way merge -----------------------------------------------------
+// Each side's change since the copy both last shared wins, so offline unticks
+// and cleared quizzes are not brought back by the other browser's copy.
+test('an offline untick survives an edit made in another browser meanwhile',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ await tick(a,'l01',0,true);await b.evaluate(()=>syncNow());
+ b.net.offline=true;
+ await tick(b,'l01',0,false);
+ await tick(a,'l02',0,true);
+ b.net.offline=false;
+ await b.evaluate(()=>syncNow());
+ const expected={l02:[true,false,false]};
+ expect(await labs(b)).toEqual(expected);
+ expect(gist.data().labs).toEqual(expected);
+ await a.evaluate(()=>syncNow());
+ expect(await labs(a)).toEqual(expected);
+ await close(a,b);
+});
+
+const setQuiz=(page,id,score,answers)=>page.evaluate(([id,score,answers])=>{store.quiz[id]=score;store.answers[id]=answers;save();return syncNow()},[id,score,answers]);
+const quizOf=(page,id)=>page.evaluate(id=>({quiz:store.quiz[id]??null,answers:store.answers[id]??null}),id);
+
+test('a quiz cleared offline stays cleared',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ await setQuiz(a,'l01',3,[0,0,0]);await b.evaluate(()=>syncNow());
+ b.net.offline=true;
+ await b.evaluate(()=>{openLesson('l01');clearQuiz('l01')});
+ await tick(a,'l02',0,true);
+ b.net.offline=false;
+ await b.evaluate(()=>syncNow());
+ expect(await quizOf(b,'l01')).toEqual({quiz:null,answers:null});
+ expect(gist.data().quiz).toEqual({});
+ expect(gist.data().labs).toEqual({l02:[true,false,false]});
+ await close(a,b);
+});
+
+test('a quiz retaken offline keeps its own score and answers together',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ await setQuiz(a,'l01',3,[0,0,0]);await b.evaluate(()=>syncNow());
+ b.net.offline=true;
+ await setQuiz(b,'l01',1,[1,1,1]);
+ await tick(a,'l02',0,true);
+ b.net.offline=false;
+ await b.evaluate(()=>syncNow());
+ expect(await quizOf(b,'l01')).toEqual({quiz:1,answers:[1,1,1]});
+ // Retaken on both sides: the higher score wins, with its own answers.
+ await a.evaluate(()=>syncNow());
+ a.net.offline=true;b.net.offline=true;
+ await setQuiz(a,'l01',2,[2,2,2]);await setQuiz(b,'l01',3,[0,0,0]);
+ a.net.offline=false;b.net.offline=false;
+ await b.evaluate(()=>syncNow());await a.evaluate(()=>syncNow());
+ for(const page of [a,b])expect(await quizOf(page,'l01')).toEqual({quiz:3,answers:[0,0,0]});
+ expect(gist.data().quiz).toEqual({l01:3});
+ await close(a,b);
+});
+
+test('an overwritten upload is rebuilt from the copy both browsers shared',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ await tick(a,'l01',0,true);await b.evaluate(()=>syncNow());
+ await a.evaluate(()=>toggleLab('l01',0,false));
+ await b.evaluate(()=>toggleLab('l02',0,true));
+ gist.barrier=2;
+ await Promise.all([a.evaluate(()=>syncNow()),b.evaluate(()=>syncNow())]);
+ const expected={l02:[true,false,false]};
+ await expect.poll(()=>gist.data().labs,{timeout:15000}).toEqual(expected);
+ for(const page of [a,b]){await page.evaluate(()=>syncNow());expect(await labs(page)).toEqual(expected)}
+ await close(a,b);
+});
+
+test('metadata without saved copies falls back to keeping both sides',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ await tick(a,'l01',0,true);await b.evaluate(()=>syncNow());
+ b.net.offline=true;
+ await tick(b,'l02',0,true);
+ await b.evaluate(()=>{const meta=JSON.parse(localStorage.getItem('cyberpath_sync_meta'));delete meta.snaps;localStorage.setItem('cyberpath_sync_meta',JSON.stringify(meta))});
+ await tick(a,'l03',0,true);
+ b.net.offline=false;
+ await b.reload();await synced(b);
+ const all={l01:[true,false,false],l02:[true,false,false],l03:[true,false,false]};
+ expect(await labs(b)).toEqual(all);
+ expect(gist.data().labs).toEqual(all);
+ await close(a,b);
+});
+
+// ---- Sign-in lasts for one tab --------------------------------------------
+const authIn=page=>page.evaluate(()=>[localStorage.getItem('cyberpath_sync_auth'),sessionStorage.getItem('cyberpath_sync_auth')!==null]);
+
+test('the token stays in this tab: never on disk, kept on reload, absent in a new tab',async({browser})=>{
+ const gist=fakeGitHub();
+ const a=await vm(browser,gist);
+ await signIn(a);await synced(a);
+ expect(await authIn(a)).toEqual([null,true]);
+ await a.reload();await synced(a);
+ expect(await authIn(a)).toEqual([null,true]);
+ const second=await a.context().newPage();await second.goto(base);
+ await expect(second.locator('#syncBtn')).toHaveText('Sign in');
+ expect(await authIn(second)).toEqual([null,false]);
+ await close(a);
+});
+
+test('a token saved by an older version is moved out of localStorage',async({browser})=>{
+ const gist=fakeGitHub();
+ const a=await vm(browser,gist);
+ await a.evaluate(([token,id])=>localStorage.setItem('cyberpath_sync_auth',JSON.stringify({token,gist:id})),[TOKEN,GIST]);
+ await a.reload();await synced(a);
+ expect(await authIn(a)).toEqual([null,true]);
+ await close(a);
+});
+
+test('signing out in one tab signs out the others',async({browser})=>{
+ const gist=fakeGitHub();
+ const one=await vm(browser,gist);
+ const two=await one.context().newPage();await two.goto(base);
+ await signIn(one);await synced(one);await signIn(two);await synced(two);
+ await one.evaluate(()=>signOut(true));
+ await expect(two.locator('#syncBtn')).toHaveText('Sign in');
+ expect(await authIn(two)).toEqual([null,false]);
+ await close(one);
+});
+
+test('a second tab signing in keeps the shared sync position',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ await tick(a,'l01',0,true);await b.evaluate(()=>syncNow());
+ const second=await b.context().newPage();await second.goto(base);
+ await tick(a,'l01',0,false);
+ await signIn(second);await synced(second);
+ // A fresh start would merge both copies and bring the tick back.
+ expect(await labs(second)).toEqual({});
+ expect(gist.data().labs).toEqual({});
+ await close(a,b);
+});
+
+test('a tab that is not signed in has its edits uploaded by one that is',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ const other=await a.context().newPage();await other.goto(base);
+ await expect(other.locator('#syncBtn')).toHaveText('Sign in');
+ await other.evaluate(()=>toggleLab('l01',0,true));
+ await expect.poll(()=>gist.data().labs).toEqual({l01:[true,false,false]});
+ await b.evaluate(()=>syncNow());
+ expect(await labs(b)).toEqual({l01:[true,false,false]});
+ await close(a,b);
+});
+
+test('edits made while no tab was signed in are kept at the next sign-in',async({browser})=>{
+ const {gist,a,b}=await signedInPair(browser);
+ await tick(a,'l03',0,true);await b.evaluate(()=>syncNow());
+ // Close b's only signed-in tab, then edit in a new tab that is not signed in.
+ const context=b.context();
+ const later=await context.newPage();await b.close();await later.goto(base);
+ await later.evaluate(()=>{toggleLab('l03',0,false);toggleLab('l01',0,true)});
+ await tick(a,'l02',0,true);
+ await signIn(later);await synced(later);
+ const expected={l01:[true,false,false],l02:[true,false,false]};
+ expect(await labs(later)).toEqual(expected);
+ expect(gist.data().labs).toEqual(expected);
+ await close(a,later);
+});
